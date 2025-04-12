@@ -1,14 +1,13 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"os/signal"
-	"time"
 
+	"github.com/justjakka/reencoder/files"
 	"github.com/tidwall/buntdb"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/sync/errgroup"
 )
 
 func runCmd(cCtx *cli.Context) error {
@@ -17,32 +16,51 @@ func runCmd(cCtx *cli.Context) error {
 		return err
 	}
 
-	db, err := buntdb.Open(ctx.Value("database").(string))
+	db, err := buntdb.Open(ctx.Value("dbfile").(string))
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
+	if err := db.Shrink(); err != nil {
+		return err
+	}
+
+	if err := db.CreateIndex("process", "*", buntdb.IndexJSON("process")); err != nil {
+		if err != buntdb.ErrIndexExists {
+			return err
+		}
+	}
+
+	ctx = context.WithValue(ctx, "database", db)
+
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
-	test := new(errgroup.Group)
-	test.SetLimit(3)
-	for n := 1; n < 10; n++ {
-		test.Go(func() error {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				fmt.Println("test")
-				time.Sleep(3 * time.Second)
-				return nil
-			}
-		})
+	if err = files.IndexFlacs(ctx); err != nil {
+		return err
 	}
-	_ = test.Wait()
-	fmt.Println("reached")
-	return cCtx.Err()
+
+	return nil
+
+	/*
+		test := new(errgroup.Group)
+		test.SetLimit(3)
+		for n := 1; n < 10; n++ {
+			test.Go(func() error {
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+					fmt.Println("test")
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+			})
+		}
+		_ = test.Wait()
+		fmt.Println("reached")
+		return cCtx.Err() */
 }
 
 func start() {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/urfave/cli/v2"
 )
@@ -26,21 +28,35 @@ func getLocalStorage() string {
 }
 
 func getDb(cCtx *cli.Context) (context.Context, error) {
-	if cCtx.Path("database") == "" {
+	if cCtx.Path("dbfile") == "" {
 		localFolder := getLocalStorage()
 		if localFolder == "" {
-			return context.WithValue(cCtx.Context, "database", ""), errors.New("failed to locate application data folder")
+			return context.WithValue(cCtx.Context, "dbfile", ""), errors.New("failed to locate application data folder")
 		}
 
-		return context.WithValue(cCtx.Context, "database", filepath.Join(localFolder, "reencoder.db")), nil
+		return context.WithValue(cCtx.Context, "dbfile", filepath.Join(localFolder, "reencoder.db")), nil
 	}
-	if _, err := os.Stat(cCtx.Path("database")); err != nil {
-		return context.WithValue(cCtx.Context, "database", ""), err
+	if _, err := os.Stat(cCtx.Path("dbfile")); err != nil {
+		return context.WithValue(cCtx.Context, "dbfile", ""), err
 	}
-	return context.WithValue(cCtx.Context, "database", cCtx.Path("database")), nil
+	return context.WithValue(cCtx.Context, "dbfile", cCtx.Path("dbfile")), nil
+}
+
+func checkTools() error {
+	if _, err := exec.LookPath("flac"); err != nil {
+		return errors.New("missing flac executable")
+	}
+	if _, err := exec.LookPath("metaflac"); err != nil {
+		return errors.New("missing metaflac executable")
+	}
+	return nil
 }
 
 func initCmd(cCtx *cli.Context) (context.Context, error) {
+	if err := checkTools(); err != nil {
+		return nil, err
+	}
+
 	if _, err := os.Stat(cCtx.Path("path")); err != nil {
 		return nil, err
 	}
@@ -49,5 +65,13 @@ func initCmd(cCtx *cli.Context) (context.Context, error) {
 	if err != nil {
 		return nil, err
 	}
-	return context.WithValue(ctx, "path", cCtx.Path("path")), nil
+
+	ctx = context.WithValue(ctx, "path", cCtx.Path("path"))
+
+	encoder, err := exec.Command("flac", "-v").Output()
+	if err != nil {
+		return nil, err
+	}
+
+	return context.WithValue(ctx, "encoder", strings.ReplaceAll(strings.Split(string(encoder), " ")[1], "\n", "")), nil
 }
