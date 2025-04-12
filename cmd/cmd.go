@@ -5,32 +5,23 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/justjakka/reencoder/files"
-	"github.com/tidwall/buntdb"
+	badger "github.com/dgraph-io/badger/v4"
 	"github.com/urfave/cli/v2"
+
+	"github.com/justjakka/reencoder/files"
 )
 
 func runCmd(cCtx *cli.Context) error {
-	ctx, err := initCmd(cCtx)
+	ctx, err := initArgs(cCtx)
 	if err != nil {
 		return err
 	}
 
-	db, err := buntdb.Open(ctx.Value("dbfile").(string))
+	db, err := badger.Open(files.Options(ctx.Value("dbfile").(string)))
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
-	if err := db.Shrink(); err != nil {
-		return err
-	}
-
-	if err := db.CreateIndex("process", "*", buntdb.IndexJSON("process")); err != nil {
-		if err != buntdb.ErrIndexExists {
-			return err
-		}
-	}
 
 	ctx = context.WithValue(ctx, "database", db)
 
@@ -38,6 +29,10 @@ func runCmd(cCtx *cli.Context) error {
 	defer stop()
 
 	if err = files.IndexFlacs(ctx); err != nil {
+		return err
+	}
+
+	if err = files.ReencodeFlacs(ctx); err != nil {
 		return err
 	}
 
@@ -63,7 +58,7 @@ func runCmd(cCtx *cli.Context) error {
 		return cCtx.Err() */
 }
 
-func start() {
+func Start() {
 	app := &cli.App{
 		Name:        "reencoder",
 		Usage:       "reencodes and stores info",

@@ -34,7 +34,7 @@ func getDb(cCtx *cli.Context) (context.Context, error) {
 			return context.WithValue(cCtx.Context, "dbfile", ""), errors.New("failed to locate application data folder")
 		}
 
-		return context.WithValue(cCtx.Context, "dbfile", filepath.Join(localFolder, "reencoder.db")), nil
+		return context.WithValue(cCtx.Context, "dbfile", filepath.Join(localFolder, "reencoder")), nil
 	}
 	if _, err := os.Stat(cCtx.Path("dbfile")); err != nil {
 		return context.WithValue(cCtx.Context, "dbfile", ""), err
@@ -52,7 +52,7 @@ func checkTools() error {
 	return nil
 }
 
-func initCmd(cCtx *cli.Context) (context.Context, error) {
+func initArgs(cCtx *cli.Context) (context.Context, error) {
 	if err := checkTools(); err != nil {
 		return nil, err
 	}

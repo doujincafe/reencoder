@@ -6,9 +6,9 @@ import (
 )
 
 var (
-	UpToDate      = errors.New("file is up to date")
-	MovedFile     = errors.New("file was moved")
-	NeedsReencode = errors.New("file needs to be reencoded")
+	ReencodeNotNeeded = errors.New("file is up to date")
+	FileMoved         = errors.New("file was moved")
+	ReencodeNeeded    = errors.New("file needs to be reencoded")
 )
 
 type FileInfo struct {
