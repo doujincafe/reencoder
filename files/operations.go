@@ -18,13 +18,13 @@ import (
 )
 
 func (file *FileInfo) reencodeFile(ctx context.Context) error {
-	/* cmd := exec.Command("flac", "-8", "-f", file.AbsPath)
-	if err := cmd.Run(); err != nil {
-		log.Printf("%s\n", err.Error())
+	out, err := exec.Command("flac", "-8fs", "-j4", file.AbsPath).Output()
+	if err != nil {
+		fmt.Printf("%v\n", out)
 		return err
 	}
-	file.Encoder = ctx.Value("encoder").(string) */
-	fmt.Println(file)
+	file.Encoder = ctx.Value("encoder").(string)
+	file.Process = false
 	return nil
 }
 

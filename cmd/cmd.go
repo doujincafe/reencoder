@@ -17,7 +17,7 @@ func runCmd(cCtx *cli.Context) error {
 		return err
 	}
 
-	db, err := badger.Open(files.Options(ctx.Value("dbfile").(string)))
+	db, err := badger.Open(Options(ctx.Value("dbfile").(string)))
 	if err != nil {
 		return err
 	}
@@ -28,34 +28,27 @@ func runCmd(cCtx *cli.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
+	counter := int64(0)
+
+	ctx = context.WithValue(ctx, "counter", &counter)
+
 	if err = files.IndexFlacs(ctx); err != nil {
 		return err
 	}
+
+	/* db.SetDiscardTs(badger.) */
 
 	if err = files.ReencodeFlacs(ctx); err != nil {
 		return err
 	}
 
-	return nil
+	db.RunValueLogGC(0.2)
 
-	/*
-		test := new(errgroup.Group)
-		test.SetLimit(3)
-		for n := 1; n < 10; n++ {
-			test.Go(func() error {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					fmt.Println("test")
-					time.Sleep(3 * time.Second)
-					return nil
-				}
-			})
-		}
-		_ = test.Wait()
-		fmt.Println("reached")
-		return cCtx.Err() */
+	if err := db.Sync(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func Start() {
