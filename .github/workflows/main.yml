@@ -1,7 +1,9 @@
 name: Release
 on:
   release:
-    types: [created]
+    types: [created]on:
+  workflow_dispatch:
+  
 
 permissions:
     contents: write
