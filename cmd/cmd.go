@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/signal"
 
-	badger "github.com/dgraph-io/badger/v4"
+	"github.com/rosedblabs/rosedb/v2"
 	"github.com/urfave/cli/v2"
 
 	"github.com/justjakka/reencoder/files"
@@ -17,7 +17,9 @@ func runCmd(cCtx *cli.Context) error {
 		return err
 	}
 
-	db, err := badger.Open(Options(ctx.Value("dbfile").(string)))
+	options := rosedb.DefaultOptions
+	options.DirPath = ctx.Value("dbfile").(string)
+	db, err := rosedb.Open(options)
 	if err != nil {
 		return err
 	}
@@ -36,18 +38,13 @@ func runCmd(cCtx *cli.Context) error {
 		return err
 	}
 
-	/* db.SetDiscardTs(badger.) */
-
 	if err = files.ReencodeFlacs(ctx); err != nil {
 		return err
 	}
 
-	db.RunValueLogGC(0.2)
-
 	if err := db.Sync(); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -70,6 +67,11 @@ func Start() {
 				Name:    "database",
 				Usage:   "Path to database",
 				Aliases: []string{"d"},
+			},
+			&cli.StringSliceFlag{
+				Name:    "flac",
+				Usage:   "Flac arguments to use when reencoding, can be used multiple times",
+				Aliases: []string{"a"},
 			},
 		},
 		Action: runCmd,

@@ -2,7 +2,6 @@ package files
 
 import (
 	"errors"
-	"time"
 )
 
 var (
@@ -12,8 +11,7 @@ var (
 )
 
 type FileInfo struct {
-	AbsPath string    `json:"abspath"`
-	Modtime time.Time `json:"modtime"`
-	Encoder string    `json:"encoder"`
-	Process bool      `json:"process"`
+	AbsPath string `json:"abspath"`
+	Encoder string `json:"encoder"`
+	Process bool   `json:"process"`
 }
