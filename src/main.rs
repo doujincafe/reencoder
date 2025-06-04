@@ -23,7 +23,6 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(std::path::Path::new("16bit.flac.tmp")).unwrap();
         assert_eq!(target_md5, source_md5);
     }
     #[test]
@@ -41,10 +40,10 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(std::path::Path::new("24bit.flac.tmp")).unwrap();
         assert_eq!(target_md5, source_md5);
     }
     #[test]
+    #[should_panic]
     fn bit32() {
         flac::encode_file(std::path::Path::new("32bit.flac")).unwrap();
         let target_md5 = Tag::read_from_path("32bit.flac.tmp")
@@ -59,7 +58,6 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(std::path::Path::new("32bit.flac.tmp")).unwrap();
         assert_eq!(target_md5, source_md5);
     }
 }
