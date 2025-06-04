@@ -43,7 +43,7 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
         .collect::<Vec<_>>()
         .chunks(4096)
     {
-        enc.process_interleaved(samples, 2048).unwrap();
+        enc.process_interleaved(samples, 4096 / config.channels).unwrap();
         let _ = samples
             .iter()
             .map(|sample| {
