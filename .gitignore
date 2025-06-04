@@ -23,3 +23,5 @@
 target
 *.flac
 *.wav
+*.tmp
+
