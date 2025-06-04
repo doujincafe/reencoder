@@ -3,7 +3,7 @@ use claxon::FlacReader;
 use flac_bound::{FlacEncoder, WriteWrapper};
 use i24::i24;
 use md5::{Digest, Md5};
-use metaflac::Tag;
+use metaflac::{Tag, Block};
 use std::fs::{File, read};
 
 struct StreamConfig {
@@ -48,9 +48,10 @@ fn process_samples_i16(
         .samples()
         .map(|sample| sample.unwrap())
         .collect::<Vec<_>>()
-        .chunks(1024 * usize::try_from(config.channels)?)
+        .chunks(4096 * usize::try_from(config.channels).unwrap())
     {
-        enc.process_interleaved(samples, 1024).unwrap();
+        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
+            .unwrap();
         let _ = samples
             .iter()
             .map(|sample| hasher.update((i16::try_from(*sample)).unwrap().to_le_bytes()))
@@ -69,9 +70,10 @@ fn process_samples_i24(
         .samples()
         .map(|sample| sample.unwrap())
         .collect::<Vec<_>>()
-        .chunks(1024 * usize::try_from(config.channels)?)
+        .chunks(4096 * usize::try_from(config.channels).unwrap())
     {
-        enc.process_interleaved(samples, 1024).unwrap();
+        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
+            .unwrap();
         let _ = samples
             .iter()
             .map(|sample| hasher.update((i24::try_from(*sample)).unwrap().to_le_bytes()))
@@ -90,9 +92,10 @@ fn process_samples_i32(
         .samples()
         .map(|sample| sample.unwrap())
         .collect::<Vec<_>>()
-        .chunks(1024 * usize::try_from(config.channels)?)
+        .chunks(4096 * usize::try_from(config.channels).unwrap())
     {
-        enc.process_interleaved(samples, 1024).unwrap();
+        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
+            .unwrap();
         let _ = samples
             .iter()
             .map(|sample| hasher.update(sample.to_le_bytes()))
@@ -130,37 +133,33 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
     match config.bits_per_sample {
         Bps::_16 => process_samples_i16(&mut hasher, reader, &mut enc, &config)?,
         Bps::_24 => process_samples_i24(&mut hasher, reader, &mut enc, &config)?,
-        /* Bps::_32 => process_samples_i32(&mut hasher, reader, &mut enc, &config)?, */
-        Bps::_32 => unimplemented!(),
+        Bps::_32 => process_samples_i32(&mut hasher, reader, &mut enc, &config)?,
     };
 
     if let Err(enc) = enc.finish() {
         return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
     }
 
-    /* let source_tags = Tag::read_from_path(file)?;
-    let mut target_tags = Tag::read_from_path(tempname)?;
-
-
-    for block in source_tags.blocks() {
-        todo!()
-    } */
-    let source_tags = Tag::read_from_path(file)?;
-    let mut out_tags = Tag::new();
-    let mut streaminfo = source_tags.get_streaminfo().unwrap().clone();
+    let tags = Tag::read_from_path(file)?;
+    let mut output = Tag::read_from_path(&tempname)?;
+    let mut streaminfo = tags.get_streaminfo().unwrap().clone();
 
     streaminfo.md5 = hasher.finalize()[..].to_vec();
-    out_tags.set_streaminfo(streaminfo);
-
-    for block in source_tags.get_blocks(metaflac::BlockType::SeekTable) {
-        out_tags.push_block(block.clone());
+    output.set_streaminfo(streaminfo);
+    
+    for block in tags.blocks() {
+        match block {
+            Block::VorbisComment(comment) => {
+                for (key, val) in comment.comments.clone() {
+                    output.set_vorbis(key, val);
+                }
+            },
+            Block::StreamInfo(_) => {},
+            _ => output.push_block(block.clone()),
+        }
     }
 
-    for block in source_tags.get_blocks(metaflac::BlockType::VorbisComment) {
-        out_tags.push_block(block.clone());
-    }
-
-    out_tags.write_to_path(tempname)?;
+    output.write_to_path(tempname)?;
 
     Ok(())
 }
