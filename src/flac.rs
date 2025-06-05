@@ -3,8 +3,8 @@ use claxon::FlacReader;
 use flac_bound::{FlacEncoder, WriteWrapper};
 use i24::i24;
 use md5::{Digest, Md5};
-use metaflac::{Tag, Block};
-use std::fs::{File, read};
+use metaflac::{Block, Tag};
+use std::fs::File;
 
 struct StreamConfig {
     channels: u32,
@@ -82,7 +82,7 @@ fn process_samples_i24(
     Ok(())
 }
 
-fn process_samples_i32(
+/* fn process_samples_i32(
     hasher: &mut impl Digest,
     mut reader: FlacReader<File>,
     enc: &mut FlacEncoder,
@@ -101,8 +101,11 @@ fn process_samples_i32(
             .map(|sample| hasher.update(sample.to_le_bytes()))
             .collect::<Vec<_>>();
     }
+    for sample in reader.samples() {
+        sample?;
+    }
     Ok(())
-}
+} */
 
 pub fn encode_file(file: &std::path::Path) -> Result<()> {
     let reader = claxon::FlacReader::open(file)?;
@@ -133,7 +136,8 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
     match config.bits_per_sample {
         Bps::_16 => process_samples_i16(&mut hasher, reader, &mut enc, &config)?,
         Bps::_24 => process_samples_i24(&mut hasher, reader, &mut enc, &config)?,
-        Bps::_32 => process_samples_i32(&mut hasher, reader, &mut enc, &config)?,
+        /* Bps::_32 => process_samples_i32(&mut hasher, reader, &mut enc, &config)?, */
+        Bps::_32 => unimplemented!("32bit flac isnt supported by claxon")
     };
 
     if let Err(enc) = enc.finish() {
@@ -146,15 +150,15 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
 
     streaminfo.md5 = hasher.finalize()[..].to_vec();
     output.set_streaminfo(streaminfo);
-    
+
     for block in tags.blocks() {
         match block {
             Block::VorbisComment(comment) => {
                 for (key, val) in comment.comments.clone() {
                     output.set_vorbis(key, val);
                 }
-            },
-            Block::StreamInfo(_) => {},
+            }
+            Block::StreamInfo(_) => {}
             _ => output.push_block(block.clone()),
         }
     }
