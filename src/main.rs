@@ -1,7 +1,11 @@
 mod flac;
 
 fn main() {
-    todo!()
+    let start = std::time::Instant::now();
+    if let Err(err) = flac::encode_file(std::path::Path::new("16bit.flac")) {
+        println!("{}", err)
+    };
+    println!("{}", start.elapsed().as_secs())
 }
 
 #[cfg(test)]

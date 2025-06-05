@@ -2,11 +2,12 @@
 name = "reencoder"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/justjakka/reencoder/"
 
 [dependencies]
 anyhow = "1.0.98"
-claxon = "0.4.3"
 flac-bound = { version = "0.5.0", features = ["libflac-noogg"], default-features = false }
 i24 = "2.1.0"
 md-5 = "0.10.6"
 metaflac = "0.2.8"
+symphonia = { git = "https://github.com/pdeljanov/Symphonia.git", branch = "dev-0.6", default-features = false, features = ["flac"] }

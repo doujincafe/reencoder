@@ -1,16 +1,20 @@
 use anyhow::{Result, anyhow};
-use claxon::FlacReader;
 use flac_bound::{FlacEncoder, WriteWrapper};
 use i24::i24;
 use md5::{Digest, Md5};
 use metaflac::{Block, Tag};
 use std::fs::File;
+use symphonia::core::{
+    audio::{Audio, GenericAudioBufferRef},
+    formats::{FormatOptions, TrackType, probe::Hint},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+};
 
 struct StreamConfig {
     channels: u32,
     bits_per_sample: Bps,
     sample_rate: u32,
-    total_samples_estimate: u64,
 }
 
 enum Bps {
@@ -38,85 +42,39 @@ impl Bps {
     }
 }
 
-fn process_samples_i16(
-    hasher: &mut impl Digest,
-    mut reader: FlacReader<File>,
-    enc: &mut FlacEncoder,
-    config: &StreamConfig,
-) -> Result<()> {
-    for samples in reader
-        .samples()
-        .map(|sample| sample.unwrap())
-        .collect::<Vec<_>>()
-        .chunks(4096 * usize::try_from(config.channels).unwrap())
-    {
-        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
-            .unwrap();
-        let _ = samples
-            .iter()
-            .map(|sample| hasher.update((i16::try_from(*sample)).unwrap().to_le_bytes()))
-            .collect::<Vec<_>>();
-    }
-    Ok(())
-}
-
-fn process_samples_i24(
-    hasher: &mut impl Digest,
-    mut reader: FlacReader<File>,
-    enc: &mut FlacEncoder,
-    config: &StreamConfig,
-) -> Result<()> {
-    for samples in reader
-        .samples()
-        .map(|sample| sample.unwrap())
-        .collect::<Vec<_>>()
-        .chunks(4096 * usize::try_from(config.channels).unwrap())
-    {
-        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
-            .unwrap();
-        let _ = samples
-            .iter()
-            .map(|sample| hasher.update((i24::try_from(*sample)).unwrap().to_le_bytes()))
-            .collect::<Vec<_>>();
-    }
-    Ok(())
-}
-
-/* fn process_samples_i32(
-    hasher: &mut impl Digest,
-    mut reader: FlacReader<File>,
-    enc: &mut FlacEncoder,
-    config: &StreamConfig,
-) -> Result<()> {
-    for samples in reader
-        .samples()
-        .map(|sample| sample.unwrap())
-        .collect::<Vec<_>>()
-        .chunks(4096 * usize::try_from(config.channels).unwrap())
-    {
-        enc.process_interleaved(samples, u32::try_from(samples.len()).unwrap() / config.channels)
-            .unwrap();
-        let _ = samples
-            .iter()
-            .map(|sample| hasher.update(sample.to_le_bytes()))
-            .collect::<Vec<_>>();
-    }
-    for sample in reader.samples() {
-        sample?;
-    }
-    Ok(())
-} */
-
 pub fn encode_file(file: &std::path::Path) -> Result<()> {
-    let reader = claxon::FlacReader::open(file)?;
+    let src = std::fs::File::open(file)?;
+    let mss = MediaSourceStream::new(Box::new(src), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("flac");
+
+    let format_opts: FormatOptions = Default::default();
+    let metadata_opts: MetadataOptions = Default::default();
+
+    let mut format = symphonia::default::get_probe()
+        .probe(&hint, mss, format_opts, metadata_opts)
+        .unwrap();
+
+    let track = format.default_track(TrackType::Audio).unwrap();
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(
+            track.codec_params.as_ref().unwrap().audio().unwrap(),
+            &Default::default(),
+        )
+        .unwrap();
+
+    let track_id = track.id;
+
+    let params = track.codec_params.as_ref().unwrap().audio().unwrap();
+
     let config = StreamConfig {
-        channels: reader.streaminfo().channels,
-        bits_per_sample: Bps::new(reader.streaminfo().bits_per_sample)?,
-        sample_rate: reader.streaminfo().sample_rate,
-        total_samples_estimate: reader.streaminfo().samples.unwrap(),
+        channels: u32::try_from(params.channels.as_ref().unwrap().count()).unwrap(),
+        bits_per_sample: Bps::new(params.bits_per_sample.unwrap())?,
+        sample_rate: params.sample_rate.unwrap(),
     };
 
-    let tempname = format!("{}.{}", file.display(), "tmp");
+    let tempname = format!("{}.tmp", file.display());
 
     let mut outf = File::create(&tempname)?;
     let mut outw = WriteWrapper(&mut outf);
@@ -125,7 +83,6 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
         .channels(config.channels)
         .bits_per_sample(config.bits_per_sample.value())
         .sample_rate(config.sample_rate)
-        .total_samples_estimate(config.total_samples_estimate)
         .compression_level(8)
         .verify(false)
         .init_write(&mut outw)
@@ -133,12 +90,63 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
 
     let mut hasher = Md5::new();
 
-    match config.bits_per_sample {
-        Bps::_16 => process_samples_i16(&mut hasher, reader, &mut enc, &config)?,
-        Bps::_24 => process_samples_i24(&mut hasher, reader, &mut enc, &config)?,
-        /* Bps::_32 => process_samples_i32(&mut hasher, reader, &mut enc, &config)?, */
-        Bps::_32 => unimplemented!("32bit flac isnt supported by claxon")
-    };
+    let mut sample_buf: Vec<i32> = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(error) => return Err(error.into()),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        match decoder.decode(&packet) {
+            Ok(audio_buf) => match audio_buf {
+                GenericAudioBufferRef::S32(buf) => {
+                    match config.bits_per_sample {
+                        Bps::_16 => {
+                            let _ = buf
+                                .iter_interleaved()
+                                .map(|sample| {
+                                    let real_sample =
+                                        sample >> (32 - config.bits_per_sample.value());
+                                    hasher
+                                        .update(i16::try_from(real_sample).unwrap().to_le_bytes());
+                                    sample_buf.push(real_sample);
+                                })
+                                .collect::<Vec<_>>();
+                        }
+                        Bps::_24 => {
+                            let _ = buf
+                                .iter_interleaved()
+                                .map(|sample| {
+                                    let real_sample =
+                                        sample >> (32 - config.bits_per_sample.value());
+                                    hasher.update(
+                                        i24::try_from_i32(real_sample).unwrap().to_le_bytes(),
+                                    );
+                                    sample_buf.push(real_sample);
+                                })
+                                .collect::<Vec<_>>();
+                        }
+                        Bps::_32 => return Err(anyhow!("how did you get here")),
+                    }
+
+                    enc.process_interleaved(
+                        sample_buf.as_slice(),
+                        u32::try_from(buf.samples_planar()).unwrap(),
+                    )
+                    .unwrap();
+                    sample_buf.clear();
+                }
+                _ => return Err(anyhow!("unsupported codec")),
+            },
+            Err(err) => return Err(err.into()),
+        }
+    }
 
     if let Err(enc) = enc.finish() {
         return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
