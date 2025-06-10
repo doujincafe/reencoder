@@ -171,7 +171,9 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
         }
     }
 
-    output.write_to_path(tempname)?;
+    output.write_to_path(&tempname)?;
+
+    std::fs::rename(&tempname, file)?;
 
     Ok(())
 }
