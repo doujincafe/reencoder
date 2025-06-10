@@ -219,7 +219,6 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "symphonia"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia.git?branch=dev-0.6#c7efbcb05dde274d13a50b4f7aac9db4c773f602"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -230,7 +229,6 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia.git?branch=dev-0.6#c7efbcb05dde274d13a50b4f7aac9db4c773f602"
 dependencies = [
  "log",
  "symphonia-common",
@@ -241,7 +239,6 @@ dependencies = [
 [[package]]
 name = "symphonia-common"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia.git?branch=dev-0.6#c7efbcb05dde274d13a50b4f7aac9db4c773f602"
 dependencies = [
  "symphonia-core",
  "symphonia-metadata",
@@ -250,7 +247,6 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia.git?branch=dev-0.6#c7efbcb05dde274d13a50b4f7aac9db4c773f602"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -263,7 +259,6 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia.git?branch=dev-0.6#c7efbcb05dde274d13a50b4f7aac9db4c773f602"
 dependencies = [
  "lazy_static",
  "log",

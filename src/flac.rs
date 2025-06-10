@@ -132,7 +132,15 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
                                 })
                                 .collect::<Vec<_>>();
                         }
-                        Bps::_32 => return Err(anyhow!("how did you get here")),
+                        Bps::_32 => {
+                            let _ = buf
+                                .iter_interleaved()
+                                .map(|sample| {
+                                    hasher.update(sample.to_le_bytes());
+                                    sample_buf.push(sample);
+                                })
+                                .collect::<Vec<_>>();
+                        }
                     }
 
                     enc.process_interleaved(

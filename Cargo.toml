@@ -10,4 +10,5 @@ flac-bound = { version = "0.5.0", features = ["libflac-noogg"], default-features
 i24 = "2.1.0"
 md-5 = "0.10.6"
 metaflac = "0.2.8"
-symphonia = { git = "https://github.com/pdeljanov/Symphonia.git", branch = "dev-0.6", default-features = false, features = ["flac"] }
+symphonia = { version = "0.5.4", path = "../Symphonia/symphonia", default-features = false, features = ["flac"] }
+#symphonia = { git = "https://github.com/pdeljanov/Symphonia.git", branch = "dev-0.6", default-features = false, features = ["flac"] }
