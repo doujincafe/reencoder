@@ -66,29 +66,21 @@ fn encode_cycle_16(
             continue;
         }
 
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => match audio_buf {
-                GenericAudioBufferRef::S32(buf) => {
-                    let _ = buf
-                        .iter_interleaved()
-                        .map(|sample| {
-                            let real_sample = sample >> 16;
-                            hasher.update(i16::try_from(real_sample).unwrap().to_le_bytes());
-                            buffer.push(real_sample);
-                        })
-                        .collect::<Vec<_>>();
-
-                    encoder
-                        .process_interleaved(
-                            buffer.as_slice(),
-                            u32::try_from(buf.samples_planar()).unwrap(),
-                        )
-                        .unwrap();
-                    buffer.clear();
-                }
-                _ => return Err(anyhow!("unsupported codec")),
-            },
-            Err(err) => return Err(err.into()),
+        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
+            let _ = buf
+                .iter_interleaved()
+                .map(|sample| {
+                    let real_sample = sample >> 16;
+                    hasher.update(i16::try_from(real_sample).unwrap().to_le_bytes());
+                    buffer.push(real_sample);
+                })
+                .collect::<Vec<_>>();
+            encoder
+                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
+                .unwrap();
+            buffer.clear();
+        } else {
+            return Err(anyhow!("unsupported codec"));
         }
     }
 
@@ -119,29 +111,21 @@ fn encode_cycle_24(
             continue;
         }
 
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => match audio_buf {
-                GenericAudioBufferRef::S32(buf) => {
-                    let _ = buf
-                        .iter_interleaved()
-                        .map(|sample| {
-                            let real_sample = sample >> 8;
-                            hasher.update(i24::try_from(real_sample).unwrap().to_le_bytes());
-                            buffer.push(real_sample);
-                        })
-                        .collect::<Vec<_>>();
-
-                    encoder
-                        .process_interleaved(
-                            buffer.as_slice(),
-                            u32::try_from(buf.samples_planar()).unwrap(),
-                        )
-                        .unwrap();
-                    buffer.clear();
-                }
-                _ => return Err(anyhow!("unsupported codec")),
-            },
-            Err(err) => return Err(err.into()),
+        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
+            let _ = buf
+                .iter_interleaved()
+                .map(|sample| {
+                    let real_sample = sample >> 8;
+                    hasher.update(i24::try_from(real_sample).unwrap().to_le_bytes());
+                    buffer.push(real_sample);
+                })
+                .collect::<Vec<_>>();
+            encoder
+                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
+                .unwrap();
+            buffer.clear();
+        } else {
+            return Err(anyhow!("unsupported codec"));
         }
     }
 
@@ -172,28 +156,20 @@ fn encode_cycle_32(
             continue;
         }
 
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => match audio_buf {
-                GenericAudioBufferRef::S32(buf) => {
-                    let _ = buf
-                        .iter_interleaved()
-                        .map(|sample| {
-                            hasher.update(sample.to_le_bytes());
-                            buffer.push(sample);
-                        })
-                        .collect::<Vec<_>>();
-
-                    encoder
-                        .process_interleaved(
-                            buffer.as_slice(),
-                            u32::try_from(buf.samples_planar()).unwrap(),
-                        )
-                        .unwrap();
-                    buffer.clear();
-                }
-                _ => return Err(anyhow!("unsupported codec")),
-            },
-            Err(err) => return Err(err.into()),
+        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
+            let _ = buf
+                .iter_interleaved()
+                .map(|sample| {
+                    hasher.update(sample.to_le_bytes());
+                    buffer.push(sample);
+                })
+                .collect::<Vec<_>>();
+            encoder
+                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
+                .unwrap();
+            buffer.clear();
+        } else {
+            return Err(anyhow!("unsupported codec"));
         }
     }
 
