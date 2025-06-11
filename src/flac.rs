@@ -3,7 +3,7 @@ use flac_bound::{FlacEncoder, WriteWrapper};
 use i24::i24;
 use md5::{Digest, Md5, Md5Core, digest::core_api::CoreWrapper};
 use metaflac::{Block, Tag};
-use std::fs::File;
+use std::{ffi::OsStr, fs::File, path::Path};
 use symphonia::core::{
     audio::{Audio, GenericAudioBufferRef},
     codecs::audio::AudioDecoder,
@@ -11,6 +11,9 @@ use symphonia::core::{
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
+
+#[allow(dead_code)]
+pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
 struct StreamConfig {
     channels: u32,
@@ -201,8 +204,14 @@ fn encode_cycle_32(
     Ok(())
 }
 
-pub fn encode_file(file: &std::path::Path) -> Result<()> {
-    let src = std::fs::File::open(file)?;
+fn init_decoder(
+    filename: impl AsRef<Path>,
+) -> Result<(
+    Box<dyn FormatReader>,
+    Box<dyn AudioDecoder + 'static>,
+    StreamConfig,
+)> {
+    let src = std::fs::File::open(filename)?;
     let mss = MediaSourceStream::new(Box::new(src), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("flac");
@@ -231,28 +240,14 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
         sample_rate: params.sample_rate.unwrap(),
     };
 
-    let tempname = format!("{}.tmp", file.display());
+    Ok((format, decoder, config))
+}
 
-    let mut outf = File::create(&tempname)?;
-    let mut outw = WriteWrapper(&mut outf);
-    let enc = FlacEncoder::new()
-        .unwrap()
-        .channels(config.channels)
-        .bits_per_sample(config.bits_per_sample.value())
-        .sample_rate(config.sample_rate)
-        .compression_level(8)
-        .verify(false)
-        .init_write(&mut outw)
-        .unwrap();
-
-    let mut hasher = Md5::new();
-
-    match config.bits_per_sample {
-        Bps::_16 => encode_cycle_16(format, decoder, enc, &mut hasher),
-        Bps::_24 => encode_cycle_24(format, decoder, enc, &mut hasher),
-        Bps::_32 => encode_cycle_32(format, decoder, enc, &mut hasher),
-    }?;
-
+fn write_tags(
+    file: impl AsRef<Path>,
+    tempname: impl AsRef<Path>,
+    hasher: impl Digest,
+) -> Result<()> {
     let tags = Tag::read_from_path(file)?;
     let mut output = Tag::read_from_path(&tempname)?;
     let mut streaminfo = tags.get_streaminfo().unwrap().clone();
@@ -273,8 +268,115 @@ pub fn encode_file(file: &std::path::Path) -> Result<()> {
     }
 
     output.write_to_path(&tempname)?;
+    Ok(())
+}
 
-    std::fs::rename(&tempname, file)?;
+pub fn encode_file(filename: impl AsRef<OsStr>) -> Result<()> {
+    let file = Path::new(&filename);
+    let tempname = &format!("{}.tmp", file.to_str().unwrap());
+
+    let (format, decoder, config) = init_decoder(file)?;
+
+    let mut outf = File::create(tempname)?;
+    let mut outw = WriteWrapper(&mut outf);
+    let enc = FlacEncoder::new()
+        .unwrap()
+        .channels(config.channels)
+        .bits_per_sample(config.bits_per_sample.value())
+        .sample_rate(config.sample_rate)
+        .compression_level(8)
+        .verify(false)
+        .init_write(&mut outw)
+        .unwrap();
+
+    let mut hasher = Md5::new();
+
+    match config.bits_per_sample {
+        Bps::_16 => encode_cycle_16(format, decoder, enc, &mut hasher),
+        Bps::_24 => encode_cycle_24(format, decoder, enc, &mut hasher),
+        Bps::_32 => encode_cycle_32(format, decoder, enc, &mut hasher),
+    }?;
+
+    write_tags(file, tempname, hasher)?;
+
+    std::fs::rename(tempname, file)?;
 
     Ok(())
+}
+
+pub fn get_vendor(file: &Path) -> String {
+    let tag = Tag::read_from_path(file).unwrap();
+    tag.vorbis_comments().unwrap().vendor_string.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metaflac::Tag;
+
+    #[test]
+    fn bit16() {
+        let name = "16bit.flac";
+        let tempname = "16bit.flac.temp";
+        std::fs::copy(name, tempname).unwrap();
+        encode_file(std::path::Path::new(name)).unwrap();
+        let target_md5 = Tag::read_from_path(tempname)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        let encoded_md5 = Tag::read_from_path(name)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        std::fs::remove_file(tempname).unwrap();
+        assert_eq!(target_md5, encoded_md5);
+    }
+
+    #[test]
+    fn bit24() {
+        let name = "24bit.flac";
+        let tempname = "24bit.flac.temp";
+        std::fs::copy(name, tempname).unwrap();
+        encode_file(std::path::Path::new(name)).unwrap();
+        let target_md5 = Tag::read_from_path(tempname)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        let encoded_md5 = Tag::read_from_path(name)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        std::fs::remove_file(tempname).unwrap();
+        assert_eq!(target_md5, encoded_md5);
+    }
+
+    #[test]
+    fn bit32() {
+        let name = "32bit.flac";
+        let tempname = "32bit.flac.temp";
+        std::fs::copy(name, tempname).unwrap();
+        encode_file(std::path::Path::new(name)).unwrap();
+        let target_md5 = Tag::read_from_path(tempname)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        let encoded_md5 = Tag::read_from_path(name)
+            .unwrap()
+            .get_streaminfo()
+            .unwrap()
+            .md5
+            .clone();
+        std::fs::remove_file(tempname).unwrap();
+        assert_eq!(target_md5, encoded_md5);
+    }
 }
