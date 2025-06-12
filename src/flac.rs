@@ -12,7 +12,6 @@ use symphonia::core::{
     meta::MetadataOptions,
 };
 
-#[allow(dead_code)]
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
 struct StreamConfig {
@@ -280,9 +279,9 @@ pub fn encode_file(filename: impl AsRef<OsStr>) -> Result<()> {
     Ok(())
 }
 
-pub fn get_vendor(file: &Path) -> String {
-    let tag = Tag::read_from_path(file).unwrap();
-    tag.vorbis_comments().unwrap().vendor_string.clone()
+pub fn get_vendor(file: &Path) -> Result<String> {
+    let tag = Tag::read_from_path(file)?;
+    Ok(tag.vorbis_comments().unwrap().vendor_string.clone())
 }
 
 #[cfg(test)]
