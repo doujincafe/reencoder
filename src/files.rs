@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
-use libsql::Connection;
+use futures_util::StreamExt;
+use pin_utils::pin_mut;
 use std::{
     fmt::Display,
     path::{Path, PathBuf, absolute},
@@ -7,12 +8,18 @@ use std::{
 };
 use tokio::{fs::read_dir, task::JoinSet};
 
-use crate::db::Database;
+use crate::{db::Database, flac::handle_encode};
 
 #[derive(Debug)]
-struct FileError {
+pub struct FileError {
     file: PathBuf,
     error: anyhow::Error,
+}
+
+impl FileError {
+    pub fn new(file: PathBuf, error: anyhow::Error) -> Self {
+        FileError { file, error }
+    }
 }
 
 impl Display for FileError {
@@ -37,17 +44,17 @@ async fn handle_file(file: PathBuf, conn: Database) -> Result<()> {
             let db_time = conn.get_modtime(&file).await?;
             if modtime != db_time {
                 if let Err(error) = conn.update_file(&file).await {
-                    return Err(anyhow!(FileError { file, error }));
+                    return Err(anyhow!(FileError::new(file, error)));
                 };
             }
             return Ok(());
         }
-        Err(error) => return Err(anyhow!(FileError { file, error })),
+        Err(error) => return Err(anyhow!(FileError::new(file, error))),
         _ => {}
     }
 
     if let Err(error) = conn.insert_file(&file).await {
-        return Err(anyhow!(FileError { file, error }));
+        return Err(anyhow!(FileError::new(file, error)));
     }
 
     Ok(())
@@ -59,7 +66,6 @@ pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()>
     }
     let abspath = absolute(path)?;
     let mut tasks = JoinSet::new();
-    let mut counter: i64 = 0;
 
     let mut dirs = vec![abspath];
 
@@ -74,12 +80,34 @@ pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()>
                 if let Some(ext) = path.extension() {
                     if ext == "flac" {
                         let newconn = conn.clone();
-                        counter += 1;
                         tasks.spawn(async move { handle_file(path, newconn).await });
                     }
                 }
             }
-            print!("\rFiles found:\t{counter}")
+        }
+    }
+
+    while let Some(task) = tasks.join_next().await {
+        match task {
+            Ok(Err(error)) => eprintln!("{error}"),
+            Err(error) => eprintln!("Error encountered:\t{}", error),
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn reencode_files(conn: &Database) -> Result<()> {
+    let stream = conn.get_toencode_stream().await?;
+    pin_mut!(stream);
+
+    let mut tasks = JoinSet::new();
+
+    while let Some(Ok(row)) = stream.next().await {
+        if let Some(file) = row.get_value(0)?.as_text() {
+            let filename = PathBuf::from(file.clone());
+            tasks.spawn_blocking(move || handle_encode(filename));
         }
     }
 

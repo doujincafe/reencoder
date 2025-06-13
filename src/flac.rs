@@ -3,7 +3,11 @@ use flac_bound::{FlacEncoder, WriteWrapper};
 use i24::i24;
 use md5::{Digest, Md5, Md5Core, digest::core_api::CoreWrapper};
 use metaflac::{Block, Tag};
-use std::{ffi::OsStr, fs::File, path::Path};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    path::{Path, PathBuf},
+};
 use symphonia::core::{
     audio::{Audio, GenericAudioBufferRef},
     codecs::audio::AudioDecoder,
@@ -11,6 +15,8 @@ use symphonia::core::{
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
+
+use crate::files;
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
@@ -246,7 +252,7 @@ fn write_tags(
     Ok(())
 }
 
-pub fn encode_file(filename: impl AsRef<OsStr>) -> Result<()> {
+fn encode_file(filename: impl AsRef<OsStr>) -> Result<()> {
     let file = Path::new(&filename);
     let tempname = &format!("{}.tmp", file.to_str().unwrap());
 
@@ -277,6 +283,14 @@ pub fn encode_file(filename: impl AsRef<OsStr>) -> Result<()> {
     std::fs::rename(tempname, file)?;
 
     Ok(())
+}
+
+pub fn handle_encode(file: PathBuf) -> Result<()> {
+    if let Err(error) = encode_file(&file) {
+        Err(anyhow!(files::FileError::new(file, error)))
+    } else {
+        Ok(())
+    }
 }
 
 pub fn get_vendor(file: &Path) -> Result<String> {

@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
-use futures_util::StreamExt;
+use futures_util::Stream;
 use libsql::{Builder, Connection, params};
+use pin_utils::pin_mut;
 use std::{
     ffi::OsStr,
     fmt::Display,
@@ -83,21 +84,6 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_files_toencode(&self) -> Result<Vec<String>> {
-        let rows = self.0.query(TOENCODE_QUERY, ()).await?;
-        if rows.column_count() == 0 {
-            return Err(anyhow!(Errors::EmptyQuery));
-        };
-
-        let filenames = rows
-            .into_stream()
-            .map(|row| row.unwrap().get_str(0).unwrap().to_string())
-            .collect::<Vec<String>>()
-            .await;
-
-        Ok(filenames)
-    }
-
     pub async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool> {
         let abs_filename = absolute(Path::new(filename))?;
 
@@ -152,6 +138,12 @@ impl Database {
 
         Ok(())
     }
+
+    pub async fn get_toencode_stream(
+        &self,
+    ) -> Result<impl Stream<Item = libsql::Result<libsql::Row>>> {
+        Ok(self.0.query(TOENCODE_QUERY, ()).await?.into_stream())
+    }
 }
 
 pub async fn open_default_db() -> Result<Database> {
@@ -165,6 +157,8 @@ pub async fn open_default_db() -> Result<Database> {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
+
     use super::*;
 
     #[tokio::test]
@@ -175,9 +169,22 @@ mod tests {
         for file in filenames {
             let _ = conn.insert_file(&file.to_string()).await;
         }
-        let returned = conn.get_files_toencode().await.unwrap();
+        let returned = conn
+            .0
+            .query(TOENCODE_QUERY, ())
+            .await
+            .unwrap()
+            .into_stream();
+        pin_mut!(returned);
+
+        let mut counter = 0;
+
+        while let Some(Ok(_)) = returned.next().await {
+            counter += 1
+        }
+
         std::fs::remove_file(dbname).unwrap();
-        assert!(returned.is_empty())
+        assert!(counter == 0)
     }
 
     #[tokio::test]
@@ -203,8 +210,18 @@ mod tests {
 
         conn.update_file(&"16bit.flac".to_string()).await.unwrap();
 
-        let returned = conn.get_files_toencode().await.unwrap();
+        let returned = conn
+            .0
+            .query(TOENCODE_QUERY, ())
+            .await
+            .unwrap()
+            .into_stream();
+        pin_mut!(returned);
+        let mut counter = 0;
+        while let Some(Ok(_)) = returned.next().await {
+            counter += 1
+        }
         std::fs::remove_file(dbname).unwrap();
-        assert!(returned.is_empty())
+        assert!(counter == 0)
     }
 }
