@@ -24,4 +24,4 @@ target
 *.flac
 *.wav
 *.tmp
-
+*.db
