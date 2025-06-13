@@ -7,7 +7,7 @@ use std::{
 };
 use tokio::{fs::read_dir, task::JoinSet};
 
-use crate::db::Reencoder;
+use crate::db::Database;
 
 #[derive(Debug)]
 struct FileError {
@@ -26,7 +26,7 @@ impl Display for FileError {
     }
 }
 
-async fn handle_file(file: PathBuf, conn: Connection) -> Result<()> {
+async fn handle_file(file: PathBuf, conn: Database) -> Result<()> {
     match conn.check_file(&file).await {
         Ok(true) => {
             let modtime = file
@@ -53,7 +53,7 @@ async fn handle_file(file: PathBuf, conn: Connection) -> Result<()> {
     Ok(())
 }
 
-pub async fn index_files_recursively(path: &Path, conn: &Connection) -> Result<()> {
+pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()> {
     if !path.is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
@@ -96,30 +96,18 @@ pub async fn index_files_recursively(path: &Path, conn: &Connection) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use libsql::Builder;
-
     use super::*;
-
-    async fn dummy_db(name: impl AsRef<Path>) -> Connection {
-        let conn = Builder::new_local(name)
-            .build()
-            .await
-            .unwrap()
-            .connect()
-            .unwrap();
-        conn.execute("CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY, toencode BOOLEAN NOT NULL, modtime INTEGER)", ()).await.unwrap();
-        conn
-    }
 
     #[tokio::test]
     async fn test_lots_of_files() {
-        let conn = dummy_db("temp3.db").await;
+        let conn = Database::new("temp3.db").await.unwrap();
         index_files_recursively(Path::new("/mnt/Music"), &conn)
             .await
             .unwrap();
         println!(
             "\n{}",
-            conn.query("SELECT COUNT(DISTINCT path) FROM flacs", ())
+            conn.0
+                .query("SELECT COUNT(DISTINCT path) FROM flacs", ())
                 .await
                 .unwrap()
                 .next()

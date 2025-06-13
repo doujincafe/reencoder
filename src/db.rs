@@ -33,17 +33,18 @@ impl Display for Errors {
     }
 }
 
-pub trait Reencoder {
-    async fn insert_file(&self, filename: &impl AsRef<OsStr>) -> Result<()>;
-    async fn update_file(&self, filename: &impl AsRef<OsStr>) -> Result<()>;
-    async fn get_files_toencode(&self) -> Result<Vec<String>>;
-    async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool>;
-    async fn get_modtime(&self, filename: &impl AsRef<OsStr>) -> Result<u64>;
-    async fn clean_files(&self) -> Result<()>;
-}
+#[derive(Debug, Clone)]
+pub struct Database(pub Connection);
 
-impl Reencoder for Connection {
-    async fn insert_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
+impl Database {
+    pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let conn = Builder::new_local(path).build().await?.connect()?;
+        conn.execute(TABLE_CREATE, ()).await?;
+
+        Ok(Database(conn))
+    }
+
+    pub async fn insert_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
         let abs_filename = absolute(Path::new(filename))?;
         let toencode = !matches!(get_vendor(&abs_filename)?.as_str(), CURRENT_VENDOR);
 
@@ -53,16 +54,17 @@ impl Reencoder for Connection {
             .duration_since(UNIX_EPOCH)?
             .as_secs();
 
-        self.execute(
-            ADD_NEW_ITEM,
-            params![abs_filename.to_str().unwrap(), toencode, modtime],
-        )
-        .await?;
+        self.0
+            .execute(
+                ADD_NEW_ITEM,
+                params![abs_filename.to_str().unwrap(), toencode, modtime],
+            )
+            .await?;
 
         Ok(())
     }
 
-    async fn update_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
+    pub async fn update_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
         let abs_filename = absolute(Path::new(filename))?;
 
         let modtime = abs_filename
@@ -71,17 +73,18 @@ impl Reencoder for Connection {
             .duration_since(UNIX_EPOCH)?
             .as_secs();
 
-        self.execute(
-            REPLACE_ITEM,
-            params![abs_filename.to_str().unwrap(), false, modtime],
-        )
-        .await?;
+        self.0
+            .execute(
+                REPLACE_ITEM,
+                params![abs_filename.to_str().unwrap(), false, modtime],
+            )
+            .await?;
 
         Ok(())
     }
 
-    async fn get_files_toencode(&self) -> Result<Vec<String>> {
-        let rows = self.query(TOENCODE_QUERY, ()).await?;
+    pub async fn get_files_toencode(&self) -> Result<Vec<String>> {
+        let rows = self.0.query(TOENCODE_QUERY, ()).await?;
         if rows.column_count() == 0 {
             return Err(anyhow!(Errors::EmptyQuery));
         };
@@ -95,10 +98,11 @@ impl Reencoder for Connection {
         Ok(filenames)
     }
 
-    async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool> {
+    pub async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool> {
         let abs_filename = absolute(Path::new(filename))?;
 
         if let Some(row) = self
+            .0
             .query(CHECK_FILE, params!(abs_filename.to_str().unwrap()))
             .await?
             .next()
@@ -110,10 +114,11 @@ impl Reencoder for Connection {
         }
     }
 
-    async fn get_modtime(&self, filename: &impl AsRef<OsStr>) -> Result<u64> {
+    pub async fn get_modtime(&self, filename: &impl AsRef<OsStr>) -> Result<u64> {
         let abs_filename = absolute(Path::new(filename))?;
 
         if let Some(row) = self
+            .0
             .query(FETCH_MODTIME, params!(abs_filename.to_str().unwrap()))
             .await?
             .next()
@@ -129,11 +134,11 @@ impl Reencoder for Connection {
         }
     }
 
-    async fn clean_files(&self) -> Result<()> {
+    pub async fn clean_files(&self) -> Result<()> {
         let mut tasks = tokio::task::JoinSet::new();
-        while let Ok(Some(row)) = self.query(FETCH_FILES, ()).await?.next().await {
+        while let Ok(Some(row)) = self.0.query(FETCH_FILES, ()).await?.next().await {
             let path = absolute(Path::new(row.get_str(0)?))?;
-            let conn = self.clone();
+            let conn = self.0.clone();
             tasks.spawn(async move {
                 if !path.exists() {
                     let _ = conn
@@ -149,39 +154,24 @@ impl Reencoder for Connection {
     }
 }
 
-pub async fn open_db() -> Result<Connection> {
-    let conn = if let Some(base_dir) = BaseDirs::new() {
+pub async fn open_default_db() -> Result<Database> {
+    if let Some(base_dir) = BaseDirs::new() {
         let db_name = Path::new(base_dir.data_dir()).join("reencoder.db");
-        Builder::new_local(db_name).build().await?.connect()?
+        Ok(Database::new(db_name).await?)
     } else {
-        return Err(anyhow!("Failed to locate data directory"));
-    };
-
-    conn.execute(TABLE_CREATE, ()).await?;
-
-    Ok(conn)
+        Err(anyhow!("Failed to locate data directory"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn dummy_db(name: impl AsRef<Path>) -> Connection {
-        let conn = Builder::new_local(name)
-            .build()
-            .await
-            .unwrap()
-            .connect()
-            .unwrap();
-        conn.execute(TABLE_CREATE, ()).await.unwrap();
-        conn
-    }
-
     #[tokio::test]
     async fn check_localfiles() {
         let dbname = String::from("temp1.db");
         let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-        let conn = dummy_db(&dbname).await;
+        let conn = Database::new(&dbname).await.unwrap();
         for file in filenames {
             let _ = conn.insert_file(&file.to_string()).await;
         }
@@ -194,12 +184,13 @@ mod tests {
     async fn check_update() {
         let dbname = String::from("temp2.db");
         let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-        let conn = dummy_db(&dbname).await;
+        let conn = Database::new(&dbname).await.unwrap();
         for file in filenames {
             let _ = conn.insert_file(&file.to_string()).await;
         }
 
         let _ = conn
+            .0
             .execute(
                 REPLACE_ITEM,
                 params![
