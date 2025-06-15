@@ -20,6 +20,9 @@ use crate::files;
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
+type BoxedFormatReader = Box<dyn FormatReader>;
+type BoxedAudioDecoder = Box<dyn AudioDecoder + 'static>;
+
 struct StreamConfig {
     channels: u32,
     bits_per_sample: Bps,
@@ -187,11 +190,7 @@ fn encode_cycle_32(
 
 fn init_decoder(
     filename: impl AsRef<Path>,
-) -> Result<(
-    Box<dyn FormatReader>,
-    Box<dyn AudioDecoder + 'static>,
-    StreamConfig,
-)> {
+) -> Result<(BoxedFormatReader, BoxedAudioDecoder, StreamConfig)> {
     let src = std::fs::File::open(filename)?;
     let mss = MediaSourceStream::new(Box::new(src), Default::default());
     let mut hint = Hint::new();

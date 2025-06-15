@@ -2,11 +2,9 @@ use anyhow::{Result, anyhow};
 use directories::BaseDirs;
 use futures_util::Stream;
 use libsql::{Builder, Connection, params};
-use pin_utils::pin_mut;
 use std::{
     ffi::OsStr,
-    fmt::Display,
-    path::{Path, absolute},
+    path::Path,
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -19,20 +17,9 @@ const TOENCODE_QUERY: &str = "SELECT path FROM flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
 const FETCH_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
-const REMOVE_FILE: &str = "DELETE FROM flac WHERE path = ?1";
-
-#[derive(Debug)]
-pub enum Errors {
-    EmptyQuery,
-}
-
-impl Display for Errors {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Errors::EmptyQuery => write!(f, "Empty query"),
-        }
-    }
-}
+const REMOVE_FILE: &str = "DELETE FROM flacs WHERE path = ?1";
+const DEDUPE_DB: &str =
+    "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 
 #[derive(Debug, Clone)]
 pub struct Database(pub Connection);
@@ -46,7 +33,7 @@ impl Database {
     }
 
     pub async fn insert_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
-        let abs_filename = absolute(Path::new(filename))?;
+        let abs_filename = Path::new(filename).canonicalize()?;
         let toencode = !matches!(get_vendor(&abs_filename)?.as_str(), CURRENT_VENDOR);
 
         let modtime = abs_filename
@@ -66,7 +53,7 @@ impl Database {
     }
 
     pub async fn update_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
-        let abs_filename = absolute(Path::new(filename))?;
+        let abs_filename = Path::new(filename).canonicalize()?;
 
         let modtime = abs_filename
             .metadata()?
@@ -85,7 +72,7 @@ impl Database {
     }
 
     pub async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool> {
-        let abs_filename = absolute(Path::new(filename))?;
+        let abs_filename = Path::new(filename).canonicalize()?;
 
         if let Some(row) = self
             .0
@@ -101,7 +88,7 @@ impl Database {
     }
 
     pub async fn get_modtime(&self, filename: &impl AsRef<OsStr>) -> Result<u64> {
-        let abs_filename = absolute(Path::new(filename))?;
+        let abs_filename = Path::new(filename).canonicalize()?;
 
         if let Some(row) = self
             .0
@@ -122,8 +109,9 @@ impl Database {
 
     pub async fn clean_files(&self) -> Result<()> {
         let mut tasks = tokio::task::JoinSet::new();
+        self.0.execute(DEDUPE_DB, ()).await?;
         while let Ok(Some(row)) = self.0.query(FETCH_FILES, ()).await?.next().await {
-            let path = absolute(Path::new(row.get_str(0)?))?;
+            let path = Path::new(row.get_str(0)?).canonicalize()?;
             let conn = self.0.clone();
             tasks.spawn(async move {
                 if !path.exists() {
@@ -175,7 +163,7 @@ mod tests {
             .await
             .unwrap()
             .into_stream();
-        pin_mut!(returned);
+        pin_utils::pin_mut!(returned);
 
         let mut counter = 0;
 
@@ -201,7 +189,11 @@ mod tests {
             .execute(
                 REPLACE_ITEM,
                 params![
-                    absolute(Path::new("16bit.flac")).unwrap().to_str(),
+                    Path::new("16bit.flac")
+                        .canonicalize()
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
                     true,
                     ""
                 ],
@@ -216,7 +208,7 @@ mod tests {
             .await
             .unwrap()
             .into_stream();
-        pin_mut!(returned);
+        pin_utils::pin_mut!(returned);
         let mut counter = 0;
         while let Some(Ok(_)) = returned.next().await {
             counter += 1

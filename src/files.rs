@@ -3,7 +3,7 @@ use futures_util::StreamExt;
 use pin_utils::pin_mut;
 use std::{
     fmt::Display,
-    path::{Path, PathBuf, absolute},
+    path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 use tokio::{fs::read_dir, task::JoinSet};
@@ -64,7 +64,7 @@ pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()>
     if !path.is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
-    let abspath = absolute(path)?;
+    let abspath = path.canonicalize()?;
     let mut tasks = JoinSet::new();
 
     let mut dirs = vec![abspath];
@@ -98,7 +98,14 @@ pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()>
     Ok(())
 }
 
-pub async fn reencode_files(conn: &Database) -> Result<()> {
+pub async fn reencode_files(conn: &Database, folderpath: Option<&PathBuf>) -> Result<()> {
+    let mut nocheck = true;
+    let mut path = Path::new("");
+    if let Some(real_path) = folderpath {
+        nocheck = false;
+        path = real_path;
+    }
+
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
 
@@ -106,8 +113,10 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
 
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
-            let filename = PathBuf::from(file.clone());
-            tasks.spawn_blocking(move || handle_encode(filename));
+            let filename = Path::new(file).canonicalize()?;
+            if nocheck || filename.starts_with(path) {
+                tasks.spawn_blocking(move || handle_encode(filename));
+            }
         }
     }
 
@@ -120,6 +129,30 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub async fn count_reencode_files(conn: &Database, folderpath: Option<&PathBuf>) -> Result<u64> {
+    let mut nocheck = true;
+    let mut path = Path::new("");
+    if let Some(real_path) = folderpath {
+        nocheck = false;
+        path = real_path;
+    }
+
+    let mut counter: u64 = 0;
+    let stream = conn.get_toencode_stream().await?;
+    pin_mut!(stream);
+
+    while let Some(Ok(row)) = stream.next().await {
+        if let Some(file) = row.get_value(0)?.as_text() {
+            let filename = Path::new(file).canonicalize()?;
+            if nocheck || filename.starts_with(path) {
+                counter += 1;
+            }
+        }
+    }
+
+    Ok(counter)
 }
 
 #[cfg(test)]
