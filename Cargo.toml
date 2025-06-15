@@ -4,20 +4,20 @@ version = "0.0.1"
 edition = "2024"
 repository = "https://github.com/justjakka/reencoder/"
 license = "BSD-3-Clause"
+authors = ["jakka"]
+description = "A tool for keeping your flacs up-to-date"
 
 [dependencies]
 anyhow = "1.0.98"
-clap = { version = "4.5.40", default-features = false, features = [
-    "cargo",
-    "std",
-] }
+clap = { version = "4.5.40", features = ["cargo", "help", "std"] }
+clap_complete = "4.5.54"
 directories = "6.0.0"
 flac-bound = { version = "0.5.0", features = [
     "libflac-noogg",
 ], default-features = false }
 futures-util = "0.3.31"
 i24 = "2.1.0"
-libsql = { version = "0.9.10", default-features = false, features = [
+libsql = { version = "0.9.10", features = [
     "core",
     "sync",
 ] }
@@ -27,5 +27,6 @@ pin-utils = "0.1.0"
 symphonia = { version = "0.5.4", path = "../Symphonia/symphonia", default-features = false, features = [
     "flac",
 ] }
-tokio = { version = "1.45.1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1.45.1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
+tokio-util = "0.7.15"
 #symphonia = { git = "https://github.com/pdeljanov/Symphonia.git", branch = "dev-0.6", default-features = false, features = ["flac"] }

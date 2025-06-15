@@ -110,7 +110,8 @@ impl Database {
     pub async fn clean_files(&self) -> Result<()> {
         let mut tasks = tokio::task::JoinSet::new();
         self.0.execute(DEDUPE_DB, ()).await?;
-        while let Ok(Some(row)) = self.0.query(FETCH_FILES, ()).await?.next().await {
+        let mut query_res = self.0.query(FETCH_FILES, ()).await?;
+        while let Ok(Some(row)) = query_res.next().await {
             let path = Path::new(row.get_str(0)?).canonicalize()?;
             let conn = self.0.clone();
             tasks.spawn(async move {

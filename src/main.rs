@@ -1,82 +1,119 @@
 mod db;
 mod files;
 mod flac;
-use anyhow::Error;
-use clap::{Arg, ArgAction, command, value_parser};
+use anyhow::Result;
+use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
+use clap_complete::{Generator, Shell, generate};
 use std::path::PathBuf;
 
-fn main() -> Result<(), Error> {
-    let matches = command!()
-        .help_expected(true)
+fn build_cli() -> Command {
+    command!()
         .arg(
             Arg::new("path")
-                .short('p')
-                .long("path")
-                .value_parser(value_parser!(PathBuf))
-                .help("Path for indexing/reencoding"),
+                .help("Path for indexing/reencoding")
+                .action(ArgAction::Set)
+                .value_hint(ValueHint::DirPath)
+                .value_parser(value_parser!(PathBuf)),
         )
         .arg(
             Arg::new("index")
                 .short('i')
                 .long("index")
-                .action(ArgAction::SetTrue)
+                .help("Only index files")
                 .requires("path")
-                .help("Only index files"),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("doit")
                 .long("doit")
-                .action(ArgAction::SetTrue)
+                .help("Actually reencode files")
                 .conflicts_with("index")
-                .help("Actually reencode"),
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("clean")
                 .short('c')
                 .long("clean")
-                .action(ArgAction::SetTrue)
-                .help("Clean and dedupe database"),
+                .help("Clean and dedupe database")
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("threads")
                 .short('t')
                 .long("threads")
+                .help("Set number of reencoding threads")
+                .action(ArgAction::Set)
+                .value_hint(ValueHint::Other)
                 .value_parser(value_parser!(usize))
-                .default_value("4")
-                .help("Set number of reencoding threads (default: 4)"),
+                .default_value("4"),
         )
         .arg(
             Arg::new("db")
+                .short('d')
                 .long("db")
-                .value_parser(value_parser!(PathBuf))
-                .help("Path to database file"),
+                .help("Path to databse file")
+                .action(ArgAction::Set)
+                .value_hint(ValueHint::FilePath)
+                .value_parser(value_parser!(PathBuf)),
         )
-        .get_matches();
+        .arg(
+            Arg::new("shell")
+                .short('g')
+                .long("generate")
+                .help("Generate shell completions")
+                .action(ArgAction::Set)
+                .value_parser(value_parser!(Shell)),
+        )
+}
 
-    let threads = *matches.get_one::<usize>("threads").unwrap();
+fn print_completions<G: Generator>(generator: G, cmd: &mut Command) {
+    generate(
+        generator,
+        cmd,
+        cmd.get_name().to_string(),
+        &mut std::io::stdout(),
+    );
+}
+
+fn main() -> Result<()> {
+    let args = build_cli().get_matches();
+
+    if let Some(generator) = args.get_one::<Shell>("shell").copied() {
+        let mut cmd = build_cli();
+        eprintln!("Generating completion file for {generator}...");
+        print_completions(generator, &mut cmd);
+        return Ok(());
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(threads)
+        .max_blocking_threads(*args.get_one::<usize>("threads").unwrap())
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let conn = if let Some(path) = matches.get_one::<PathBuf>("db") {
+        let conn = if let Some(path) = args.get_one::<PathBuf>("db") {
             db::Database::new(path).await?
         } else {
             db::open_default_db().await?
         };
-        let path = matches.get_one::<PathBuf>("path");
-        if matches.get_flag("index") {
-            let folderpath = path.unwrap();
-            files::index_files_recursively(folderpath, &conn).await
-        } else if matches.get_flag("doit") {
-            files::reencode_files(&conn, path).await
-        } else if matches.get_flag("clean") {
-            conn.clean_files().await
-        } else {
+        let path = args.get_one::<PathBuf>("path");
+
+        if !args.get_flag("index") && !args.get_flag("clean") && !args.get_flag("doit") {
             let count = files::count_reencode_files(&conn, path).await.unwrap();
             println!("Files to reencode:\t{count}");
-            Ok(())
         }
+
+        if args.get_flag("index") {
+            files::index_files_recursively(path.unwrap(), &conn).await?;
+        }
+
+        if args.get_flag("clean") {
+            conn.clean_files().await?;
+        }
+
+        if args.get_flag("doit") {
+            files::reencode_files(&conn, path).await?;
+        }
+        Ok::<(), anyhow::Error>(())
     })?;
 
     Ok(())
