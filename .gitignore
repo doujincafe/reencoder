@@ -21,6 +21,8 @@
 .env
 .vscode/launch.json
 target
+testfiles
+testfiles_orig
 *.flac
 *.wav
 *.tmp
