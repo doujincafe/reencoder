@@ -16,14 +16,6 @@ fn build_cli() -> Command {
                 .value_parser(value_parser!(PathBuf)),
         )
         .arg(
-            Arg::new("index")
-                .short('i')
-                .long("index")
-                .help("Only index files")
-                .requires("path")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
             Arg::new("doit")
                 .long("doit")
                 .help("Actually reencode files")
@@ -97,13 +89,13 @@ fn main() -> Result<()> {
         };
         let path = args.get_one::<PathBuf>("path");
 
-        if !args.get_flag("index") && !args.get_flag("clean") && !args.get_flag("doit") {
-            let count = files::count_reencode_files(&conn, path).await.unwrap();
+        if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
+            let count = files::count_reencode_files(path, &conn).await.unwrap();
             println!("Files to reencode:\t{count}");
-        }
-
-        if args.get_flag("index") {
-            files::index_files_recursively(path.unwrap(), &conn).await?;
+        } else if let Some(realpath) = path {
+            if !args.get_flag("doit") {
+                files::index_files_recursively(realpath, &conn).await?;
+            }
         }
 
         if args.get_flag("clean") {
@@ -111,7 +103,7 @@ fn main() -> Result<()> {
         }
 
         if args.get_flag("doit") {
-            files::reencode_files(&conn, path).await?;
+            files::reencode_files(path, &conn).await?;
         }
         Ok::<(), anyhow::Error>(())
     })?;

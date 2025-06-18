@@ -17,8 +17,11 @@ pub struct FileError {
 }
 
 impl FileError {
-    pub fn new(file: PathBuf, error: anyhow::Error) -> Self {
-        FileError { file, error }
+    pub fn new(file: impl AsRef<Path>, error: anyhow::Error) -> Self {
+        FileError {
+            file: file.as_ref().to_path_buf(),
+            error,
+        }
     }
 }
 
@@ -60,14 +63,16 @@ async fn handle_file(file: PathBuf, conn: Database) -> Result<()> {
     Ok(())
 }
 
-pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()> {
-    if !path.is_dir() {
+pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) -> Result<()> {
+    if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
-    let abspath = path.canonicalize()?;
+    let abspath = path.as_ref().canonicalize()?;
     let mut tasks = JoinSet::new();
 
     let mut dirs = vec![abspath];
+
+    let mut counter: u64 = 0;
 
     while let Some(dir) = dirs.pop() {
         let mut read_dir = read_dir(dir).await?;
@@ -91,36 +96,58 @@ pub async fn index_files_recursively(path: &Path, conn: &Database) -> Result<()>
         match task {
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
-            _ => {}
+            _ => {
+                counter += 1;
+                print!("\rParsed files:\t{counter}");
+            }
         }
     }
-
     Ok(())
 }
 
-pub async fn reencode_files(conn: &Database, folderpath: Option<&PathBuf>) -> Result<()> {
-    let mut nocheck = true;
-    let mut path = Path::new("");
+fn check_path(folderpath: Option<&PathBuf>) -> (PathBuf, bool) {
     if let Some(real_path) = folderpath {
-        nocheck = false;
-        path = real_path;
+        (real_path.to_owned(), false)
+    } else {
+        (PathBuf::new(), true)
     }
+}
+
+pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<()> {
+    let (path, nocheck) = check_path(folderpath);
 
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
 
     let mut tasks = JoinSet::new();
 
+    let mut counter: u64 = 0;
+
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
             let filename = Path::new(file).canonicalize()?;
-            if nocheck || filename.starts_with(path) {
+            if nocheck || filename.starts_with(&path) {
                 tasks.spawn_blocking(move || handle_encode(filename));
             }
         }
     }
 
+    let mut update_tasks = JoinSet::new();
+
     while let Some(task) = tasks.join_next().await {
+        match task {
+            Ok(Ok(path)) => {
+                let newconn = conn.clone();
+                update_tasks.spawn(async move { newconn.update_file(path).await });
+                counter += 1;
+                print!("\rReencoded files:\t{counter}")
+            }
+            Ok(Err(error)) => eprintln!("{error}"),
+            Err(error) => eprintln!("Error encountered:\t{}", error),
+        }
+    }
+
+    while let Some(task) = update_tasks.join_next().await {
         match task {
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
@@ -131,13 +158,8 @@ pub async fn reencode_files(conn: &Database, folderpath: Option<&PathBuf>) -> Re
     Ok(())
 }
 
-pub async fn count_reencode_files(conn: &Database, folderpath: Option<&PathBuf>) -> Result<u64> {
-    let mut nocheck = true;
-    let mut path = Path::new("");
-    if let Some(real_path) = folderpath {
-        nocheck = false;
-        path = real_path;
-    }
+pub async fn count_reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<u64> {
+    let (path, nocheck) = check_path(folderpath);
 
     let mut counter: u64 = 0;
     let stream = conn.get_toencode_stream().await?;
@@ -146,7 +168,7 @@ pub async fn count_reencode_files(conn: &Database, folderpath: Option<&PathBuf>)
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
             let filename = Path::new(file).canonicalize()?;
-            if nocheck || filename.starts_with(path) {
+            if nocheck || filename.starts_with(&path) {
                 counter += 1;
             }
         }
@@ -160,25 +182,24 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_lots_of_files() {
+    async fn test_index_lots_of_files() {
         let conn = Database::new("temp3.db").await.unwrap();
-        index_files_recursively(Path::new("/mnt/Music"), &conn)
+        index_files_recursively(Path::new("./testfiles"), &conn)
             .await
             .unwrap();
-        println!(
-            "\n{}",
-            conn.0
-                .query("SELECT COUNT(DISTINCT path) FROM flacs", ())
-                .await
-                .unwrap()
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get_value(0)
-                .unwrap()
-                .as_integer()
-                .unwrap()
-        );
+
+        std::fs::remove_file("temp3.db").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reencode_lots_of_files() {
+        let conn = Database::new("temp4.db").await.unwrap();
+        let path = PathBuf::from("./testfiles");
+        index_files_recursively(Path::new("./testfiles"), &conn)
+            .await
+            .unwrap();
+        println!("\n{}", count_reencode_files(None, &conn).await.unwrap());
+        reencode_files(Some(&path), &conn).await.unwrap();
+        std::fs::remove_file("temp4.db").unwrap();
     }
 }

@@ -3,7 +3,6 @@ use directories::BaseDirs;
 use futures_util::Stream;
 use libsql::{Builder, Connection, params};
 use std::{
-    ffi::OsStr,
     path::Path,
     time::{Duration, UNIX_EPOCH},
 };
@@ -32,8 +31,8 @@ impl Database {
         Ok(Database(conn))
     }
 
-    pub async fn insert_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
-        let abs_filename = Path::new(filename).canonicalize()?;
+    pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+        let abs_filename = filename.as_ref().canonicalize()?;
         let toencode = !matches!(get_vendor(&abs_filename)?.as_str(), CURRENT_VENDOR);
 
         let modtime = abs_filename
@@ -52,8 +51,8 @@ impl Database {
         Ok(())
     }
 
-    pub async fn update_file(&self, filename: &impl AsRef<OsStr>) -> Result<()> {
-        let abs_filename = Path::new(filename).canonicalize()?;
+    pub async fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+        let abs_filename = filename.as_ref().canonicalize()?;
 
         let modtime = abs_filename
             .metadata()?
@@ -71,8 +70,8 @@ impl Database {
         Ok(())
     }
 
-    pub async fn check_file(&self, filename: &impl AsRef<OsStr>) -> Result<bool> {
-        let abs_filename = Path::new(filename).canonicalize()?;
+    pub async fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
+        let abs_filename = filename.as_ref().canonicalize()?;
 
         if let Some(row) = self
             .0
@@ -87,8 +86,8 @@ impl Database {
         }
     }
 
-    pub async fn get_modtime(&self, filename: &impl AsRef<OsStr>) -> Result<u64> {
-        let abs_filename = Path::new(filename).canonicalize()?;
+    pub async fn get_modtime(&self, filename: impl AsRef<Path>) -> Result<u64> {
+        let abs_filename = filename.as_ref().canonicalize()?;
 
         if let Some(row) = self
             .0
@@ -124,6 +123,8 @@ impl Database {
         }
 
         tasks.join_all().await;
+
+        self.0.execute("VACUUM;", ()).await?;
 
         Ok(())
     }
