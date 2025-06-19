@@ -94,7 +94,9 @@ impl FileEncoder {
             match block {
                 Block::VorbisComment(comment) => {
                     for (key, val) in comment.comments.clone() {
-                        output.set_vorbis(key, val);
+                        if key != "ENCODER" {
+                            output.set_vorbis(key, val);
+                        }
                     }
                 }
                 Block::StreamInfo(_) | Block::Padding(_) => {}
