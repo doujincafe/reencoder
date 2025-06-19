@@ -26,14 +26,10 @@ pub struct Database(pub Connection);
 
 impl Database {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
-        if path.as_ref().is_file() {
-            let conn = Builder::new_local(path).build().await?.connect()?;
-            conn.execute(TABLE_CREATE, ()).await?;
+        let conn = Builder::new_local(path).build().await?.connect()?;
+        conn.execute(TABLE_CREATE, ()).await?;
 
-            Ok(Database(conn))
-        } else {
-            Err(anyhow!("Not a file"))
-        }
+        Ok(Database(conn))
     }
 
     pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
