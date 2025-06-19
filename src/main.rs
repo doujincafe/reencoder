@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 fn build_cli() -> Command {
     command!()
@@ -86,23 +87,44 @@ fn main() -> Result<()> {
         } else {
             db::open_default_db().await?
         };
+
+        let root_canceltoken = CancellationToken::new();
+
+        let canceltoken = root_canceltoken.clone();
+
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            root_canceltoken.cancel();
+        });
+
         let path = args.get_one::<PathBuf>("path");
 
         if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
             let count = conn.get_toencode_number().await?;
             println!("Files to reencode:\t{count}");
+            return Ok(());
         }
 
         if let Some(realpath) = path {
-            files::index_files_recursively(realpath, &conn).await?;
+            let newtoken = canceltoken.clone();
+            files::index_files_recursively(realpath, &conn, newtoken).await?;
+        }
+
+        if canceltoken.is_cancelled() {
+            return Ok(());
         }
 
         if args.get_flag("clean") {
             conn.clean_files().await?;
         }
 
+        if canceltoken.is_cancelled() {
+            return Ok(());
+        }
+
         if args.get_flag("doit") {
-            files::reencode_files(&conn).await?;
+            let newtoken = canceltoken.clone();
+            files::reencode_files(&conn, newtoken).await?;
         }
         Ok::<(), anyhow::Error>(())
     })?;

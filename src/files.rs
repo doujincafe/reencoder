@@ -10,6 +10,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::{db::Database, flac::encode_file};
@@ -73,7 +74,11 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     Ok(())
 }
 
-pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) -> Result<()> {
+pub async fn index_files_recursively(
+    path: impl AsRef<Path>,
+    conn: &Database,
+    canceltoken: CancellationToken,
+) -> Result<()> {
     if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
@@ -103,7 +108,15 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
         })
         .collect::<Vec<_>>();
 
-    while let Some(task) = tasks.join_next().await {
+    while let Some(task) = tokio::select! {
+        _ = canceltoken.cancelled() => {
+            #[cfg(not(test))]
+            bar.abandon_with_message("Indexing aborted");
+            tasks.shutdown().await;
+            return Ok(())
+        },
+        task = tasks.join_next() => task
+    } {
         match task {
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
@@ -119,7 +132,7 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
     Ok(())
 }
 
-pub async fn reencode_files(conn: &Database) -> Result<()> {
+pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> Result<()> {
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
 
@@ -149,7 +162,15 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
         }
     }
 
-    while let Some(task) = tasks.join_next().await {
+    while let Some(task) = tokio::select! {
+        _ = canceltoken.cancelled() => {
+            #[cfg(not(test))]
+            bar.abandon_with_message("Reencoding aborted");
+            tasks.shutdown().await;
+            return Ok(())
+        },
+        task = tasks.join_next() => task
+    } {
         match task {
             Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
             Err(error) => eprintln!("Error encountered:\t{error}"),
@@ -173,7 +194,8 @@ mod tests {
     #[tokio::test]
     async fn test_index_lots_of_files() {
         let conn = Database::new("temp3.db").await.unwrap();
-        index_files_recursively(Path::new("./testfiles"), &conn)
+        let token = CancellationToken::new();
+        index_files_recursively(Path::new("./testfiles"), &conn, token)
             .await
             .unwrap();
 
@@ -189,11 +211,13 @@ mod tests {
             .unwrap();
         runtime.block_on(async move {
             let conn = Database::new("temp4.db").await.unwrap();
-            index_files_recursively(Path::new("./testfiles"), &conn)
+            let token = CancellationToken::new();
+            index_files_recursively(Path::new("./testfiles"), &conn, token)
                 .await
                 .unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
-            reencode_files(&conn).await.unwrap();
+            let token = CancellationToken::new();
+            reencode_files(&conn, token).await.unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
         });
 
