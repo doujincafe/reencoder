@@ -547,12 +547,12 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
-version = "0.3.12"
+version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
+checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "flac-reencoder"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1858,6 +1858,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "symphonia"
 version = "0.5.4"
+source = "git+https://github.com/sscobici/Symphonia.git?rev=2213f274c3e7231fbd7b08aa9347049852915b29#2213f274c3e7231fbd7b08aa9347049852915b29"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -1868,6 +1869,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.5.4"
+source = "git+https://github.com/sscobici/Symphonia.git?rev=2213f274c3e7231fbd7b08aa9347049852915b29#2213f274c3e7231fbd7b08aa9347049852915b29"
 dependencies = [
  "log",
  "symphonia-common",
@@ -1878,6 +1880,7 @@ dependencies = [
 [[package]]
 name = "symphonia-common"
 version = "0.5.4"
+source = "git+https://github.com/sscobici/Symphonia.git?rev=2213f274c3e7231fbd7b08aa9347049852915b29#2213f274c3e7231fbd7b08aa9347049852915b29"
 dependencies = [
  "symphonia-core",
  "symphonia-metadata",
@@ -1886,6 +1889,7 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.5.4"
+source = "git+https://github.com/sscobici/Symphonia.git?rev=2213f274c3e7231fbd7b08aa9347049852915b29#2213f274c3e7231fbd7b08aa9347049852915b29"
 dependencies = [
  "bitflags 2.9.1",
  "bytemuck",
@@ -1898,6 +1902,7 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.5.4"
+source = "git+https://github.com/sscobici/Symphonia.git?rev=2213f274c3e7231fbd7b08aa9347049852915b29#2213f274c3e7231fbd7b08aa9347049852915b29"
 dependencies = [
  "lazy_static",
  "log",

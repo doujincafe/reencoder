@@ -1,6 +1,6 @@
 [package]
 name = "flac-reencoder"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 repository = "https://github.com/justjakka/reencoder/"
 license = "BSD-3-Clause"
@@ -24,13 +24,10 @@ indicatif = { version = "0.17.11", features = [
     "improved_unicode",
     "futures",
 ] }
-libsql = { version = "0.9.10", features = ["core", "sync"] }
+libsql = { version = "0.9.11" }
 md-5 = "0.10.6"
 metaflac = "0.2.8"
 pin-utils = "0.1.0"
-symphonia = { version = "0.5.4", path = "../Symphonia/symphonia", default-features = false, features = [
-    "flac",
-] }
 tokio = { version = "1.45.1", features = [
     "macros",
     "rt",
@@ -39,4 +36,6 @@ tokio = { version = "1.45.1", features = [
 ] }
 tokio-util = "0.7.15"
 walkdir = "2.5.0"
-#symphonia = { git = "https://github.com/pdeljanov/Symphonia.git", branch = "dev-0.6", default-features = false, features = ["flac"] }
+symphonia = { git = "https://github.com/sscobici/Symphonia.git", rev = "2213f274c3e7231fbd7b08aa9347049852915b29", default-features = false, features = [
+    "flac",
+] }

@@ -283,8 +283,13 @@ fn encode_cycle_32(
 
 pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
     let filencoder = FileEncoder::new(filename)?;
+    let temp_name = filencoder.temp_name();
 
-    let mut outf = File::create(filencoder.temp_name())?;
+    if temp_name.exists() {
+        std::fs::remove_file(&temp_name)?;
+    }
+
+    let mut outf = File::create(temp_name)?;
     let mut outw = WriteWrapper(&mut outf);
     let enc = FlacEncoder::new()
         .unwrap()
