@@ -2,13 +2,15 @@ use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use pin_utils::pin_mut;
 use std::{
+    error::Error,
     fmt::Display,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 use tokio::{fs::read_dir, task::JoinSet};
+use walkdir::WalkDir;
 
-use crate::{db::Database, flac::handle_encode};
+use crate::{db::Database, flac::encode_file};
 
 #[derive(Debug)]
 pub struct FileError {
@@ -35,6 +37,8 @@ impl Display for FileError {
         )
     }
 }
+
+impl Error for FileError {}
 
 async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     match conn.check_file(&file).await {
@@ -64,11 +68,30 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     Ok(())
 }
 
+async fn count_flacs(path: impl AsRef<Path>) -> u64 {
+    let mut counter = 0;
+    let _ = WalkDir::new(path)
+        .into_iter()
+        .map(|file| {
+            let path = file.unwrap().into_path();
+            if path.is_file() && path.extension().unwrap() == "flac" {
+                counter += 1
+            }
+        })
+        .collect::<Vec<_>>();
+    counter
+}
+
 pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) -> Result<()> {
     if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
     let abspath = path.as_ref().canonicalize()?;
+
+    let files = count_flacs(&abspath).await;
+
+    println!("Total flacs:\t{files}");
+
     let mut tasks = JoinSet::new();
 
     let mut dirs = vec![abspath];
@@ -117,30 +140,30 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
             let filename = Path::new(file).canonicalize()?;
-            tasks.spawn_blocking(move || handle_encode(filename));
+            let newconn = conn.clone();
+            tasks.spawn(async move {
+                let file = filename.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || encode_file(file)).await? {
+                    return Err(anyhow!(FileError::new(&filename, error)));
+                };
+
+                if let Err(error) = newconn.update_file(&filename).await {
+                    return Err(anyhow!(FileError::new(&filename, error)));
+                };
+
+                Ok(())
+            });
         }
     }
-
-    let mut update_tasks = JoinSet::new();
 
     while let Some(task) = tasks.join_next().await {
         match task {
-            Ok(Ok(path)) => {
-                let newconn = conn.clone();
-                update_tasks.spawn(async move { newconn.update_file(path).await });
+            Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
+            Err(error) => eprintln!("Error encountered:\t{error}"),
+            _ => {
                 counter += 1;
-                print!("\rReencoded files:\t{counter}")
+                print!("Reencoded:\t{counter}");
             }
-            Ok(Err(error)) => eprintln!("{error}"),
-            Err(error) => eprintln!("Error encountered:\t{}", error),
-        }
-    }
-
-    while let Some(task) = update_tasks.join_next().await {
-        match task {
-            Ok(Err(error)) => eprintln!("{error}"),
-            Err(error) => eprintln!("Error encountered:\t{}", error),
-            _ => {}
         }
     }
 

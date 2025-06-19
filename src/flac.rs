@@ -15,8 +15,6 @@ use symphonia::core::{
     meta::MetadataOptions,
 };
 
-use crate::files;
-
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
 type BoxedFormatReader = Box<dyn FormatReader>;
@@ -281,7 +279,7 @@ fn encode_cycle_32(
     Ok(hasher.finalize().to_vec())
 }
 
-fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
+pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
     let filencoder = FileEncoder::new(filename)?;
 
     let mut outf = File::create(filencoder.temp_name())?;
@@ -297,14 +295,6 @@ fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
         .unwrap();
 
     filencoder.encode(enc)
-}
-
-pub fn handle_encode(file: impl AsRef<Path>) -> Result<impl AsRef<Path>> {
-    if let Err(error) = encode_file(&file) {
-        Err(anyhow!(files::FileError::new(file, error)))
-    } else {
-        Ok(file)
-    }
 }
 
 pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {

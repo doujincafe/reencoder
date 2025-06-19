@@ -19,7 +19,6 @@ fn build_cli() -> Command {
             Arg::new("doit")
                 .long("doit")
                 .help("Actually reencode files")
-                .conflicts_with("index")
                 .action(ArgAction::SetTrue),
         )
         .arg(
