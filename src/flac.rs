@@ -97,7 +97,7 @@ impl FileEncoder {
                         output.set_vorbis(key, val);
                     }
                 }
-                Block::StreamInfo(_) => {}
+                Block::StreamInfo(_) | Block::Padding(_) => {}
                 _ => output.push_block(block.clone()),
             }
         }
