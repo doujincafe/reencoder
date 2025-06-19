@@ -564,6 +564,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "flac-reencoder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "directories",
+ "flac-bound",
+ "futures-util",
+ "i24",
+ "libsql",
+ "md-5",
+ "metaflac",
+ "pin-utils",
+ "symphonia",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1508,26 +1528,6 @@ dependencies = [
  "getrandom 0.2.16",
  "libredox",
  "thiserror 2.0.12",
-]
-
-[[package]]
-name = "reencoder"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "clap_complete",
- "directories",
- "flac-bound",
- "futures-util",
- "i24",
- "libsql",
- "md-5",
- "metaflac",
- "pin-utils",
- "symphonia",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
