@@ -1,6 +1,6 @@
 [package]
 name = "flac-reencoder"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 repository = "https://github.com/justjakka/reencoder/"
 license = "BSD-3-Clause"
@@ -19,7 +19,11 @@ flac-bound = { version = "0.5.0", features = [
 ], default-features = false }
 futures-util = "0.3.31"
 i24 = "2.1.0"
-indicatif = { version = "0.17.11", features = ["tokio", "improved_unicode", "futures"] }
+indicatif = { version = "0.17.11", features = [
+    "tokio",
+    "improved_unicode",
+    "futures",
+] }
 libsql = { version = "0.9.10", features = ["core", "sync"] }
 md-5 = "0.10.6"
 metaflac = "0.2.8"

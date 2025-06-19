@@ -91,10 +91,10 @@ fn main() -> Result<()> {
         if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
             let count = conn.get_toencode_number().await?;
             println!("Files to reencode:\t{count}");
-        } else if let Some(realpath) = path {
-            if !args.get_flag("doit") {
-                files::index_files_recursively(realpath, &conn).await?;
-            }
+        }
+
+        if let Some(realpath) = path {
+            files::index_files_recursively(realpath, &conn).await?;
         }
 
         if args.get_flag("clean") {

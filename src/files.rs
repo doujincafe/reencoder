@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use pin_utils::pin_mut;
 use std::{
     error::Error,
@@ -7,10 +8,16 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-use tokio::{fs::read_dir, task::JoinSet};
+use tokio::task::JoinSet;
 use walkdir::WalkDir;
 
 use crate::{db::Database, flac::encode_file};
+
+const INDEXBAR_TEMPLATE: &str =
+    "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
+
+const REENCODEBAR_TEMPLATE: &str =
+    "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
 
 #[derive(Debug)]
 pub struct FileError {
@@ -68,64 +75,45 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     Ok(())
 }
 
-async fn count_flacs(path: impl AsRef<Path>) -> u64 {
-    let mut counter = 0;
-    let _ = WalkDir::new(path)
-        .into_iter()
-        .map(|file| {
-            let path = file.unwrap().into_path();
-            if path.is_file() && path.extension().unwrap() == "flac" {
-                counter += 1
-            }
-        })
-        .collect::<Vec<_>>();
-    counter
-}
-
 pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) -> Result<()> {
     if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
     let abspath = path.as_ref().canonicalize()?;
 
-    let files = count_flacs(&abspath).await;
-
-    println!("Total flacs:\t{files}");
-
     let mut tasks = JoinSet::new();
 
-    let mut dirs = vec![abspath];
+    let bar = ProgressBar::new(0)
+        .with_style(ProgressStyle::with_template(INDEXBAR_TEMPLATE)?.progress_chars("#>-"))
+        .with_message("Indexing");
 
-    let mut counter: u64 = 0;
-
-    while let Some(dir) = dirs.pop() {
-        let mut read_dir = read_dir(dir).await?;
-
-        while let Some(entry) = read_dir.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if path.is_file() {
+    let _ = WalkDir::new(abspath)
+        .into_iter()
+        .map(|file| {
+            let path = file.unwrap().into_path();
+            if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "flac" {
                         let newconn = conn.clone();
                         tasks.spawn(async move { handle_file(path, newconn).await });
+                        bar.inc_length(1);
                     }
                 }
             }
-        }
-    }
+        })
+        .collect::<Vec<_>>();
 
     while let Some(task) = tasks.join_next().await {
         match task {
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
             _ => {
-                counter += 1;
-                print!("\rParsed files:\t{counter}");
+                bar.inc(1);
             }
         }
     }
+
+    bar.finish_with_message("Finished indexing");
     Ok(())
 }
 
@@ -135,7 +123,9 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
 
     let mut tasks = JoinSet::new();
 
-    let mut counter: u64 = 0;
+    let bar = ProgressBar::new(conn.get_toencode_number().await?)
+        .with_style(ProgressStyle::with_template(REENCODEBAR_TEMPLATE)?.progress_chars("#>-"))
+        .with_message("Reencoding");
 
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
@@ -161,11 +151,12 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
             Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
             Err(error) => eprintln!("Error encountered:\t{error}"),
             _ => {
-                counter += 1;
-                print!("Reencoded:\t{counter}");
+                bar.inc(1);
             }
         }
     }
+
+    bar.finish_with_message("Finished encoding");
 
     Ok(())
 }
