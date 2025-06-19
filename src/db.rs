@@ -3,7 +3,7 @@ use directories::BaseDirs;
 use futures_util::Stream;
 use libsql::{Builder, Connection, params};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -13,6 +13,7 @@ const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY 
 const ADD_NEW_ITEM: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
 const REPLACE_ITEM: &str = "REPLACE INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
 const TOENCODE_QUERY: &str = "SELECT path FROM flacs WHERE toencode";
+const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
 const FETCH_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
@@ -34,7 +35,8 @@ impl Database {
     pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
         let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
 
-        let modtime = filename.as_ref()
+        let modtime = filename
+            .as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -51,7 +53,8 @@ impl Database {
     }
 
     pub async fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        let modtime = filename.as_ref()
+        let modtime = filename
+            .as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -104,7 +107,7 @@ impl Database {
         self.0.execute(DEDUPE_DB, ()).await?;
         let mut query_res = self.0.query(FETCH_FILES, ()).await?;
         while let Ok(Some(row)) = query_res.next().await {
-            let path = Path::new(row.get_str(0)?).to_path_buf();
+            let path = PathBuf::from(row.get_str(0)?);
             let conn = self.0.clone();
             tasks.spawn(async move {
                 if !path.exists() {
@@ -117,7 +120,7 @@ impl Database {
 
         tasks.join_all().await;
 
-        self.0.execute("VACUUM;", ()).await?;
+        self.0.execute("VACUUM", ()).await?;
 
         Ok(())
     }
@@ -126,6 +129,17 @@ impl Database {
         &self,
     ) -> Result<impl Stream<Item = libsql::Result<libsql::Row>>> {
         Ok(self.0.query(TOENCODE_QUERY, ()).await?.into_stream())
+    }
+
+    pub async fn get_toencode_number(&self) -> Result<u64> {
+        Ok(self
+            .0
+            .query(TOENCODE_NUMBER, ())
+            .await?
+            .next()
+            .await?
+            .unwrap()
+            .get::<u64>(0)?)
     }
 }
 
@@ -176,7 +190,9 @@ mod tests {
         let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
         let conn = Database::new(&dbname).await.unwrap();
         for file in filenames {
-            let _ = conn.insert_file(&file.to_string()).await;
+            let _ = conn
+                .insert_file(Path::new(file).canonicalize().unwrap())
+                .await;
         }
 
         let _ = conn
@@ -195,7 +211,15 @@ mod tests {
             )
             .await;
 
-        conn.update_file(&"16bit.flac".to_string()).await.unwrap();
+        conn.update_file(
+            Path::new("16bit.flac")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
         let returned = conn
             .0

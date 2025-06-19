@@ -36,10 +36,11 @@ impl Display for FileError {
     }
 }
 
-async fn handle_file(file: PathBuf, conn: Database) -> Result<()> {
+async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     match conn.check_file(&file).await {
         Ok(true) => {
             let modtime = file
+                .as_ref()
                 .metadata()?
                 .modified()?
                 .duration_since(UNIX_EPOCH)?
@@ -105,17 +106,7 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
     Ok(())
 }
 
-fn check_path(folderpath: Option<&PathBuf>) -> Result<(PathBuf, bool)> {
-    if let Some(real_path) = folderpath {
-        Ok((real_path.canonicalize()?, false))
-    } else {
-        Ok((PathBuf::new(), true))
-    }
-}
-
-pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<()> {
-    let (path, nocheck) = check_path(folderpath)?;
-
+pub async fn reencode_files(conn: &Database) -> Result<()> {
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
 
@@ -126,9 +117,7 @@ pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Re
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
             let filename = Path::new(file).canonicalize()?;
-            if nocheck || filename.starts_with(&path) {
-                tasks.spawn_blocking(move || handle_encode(filename));
-            }
+            tasks.spawn_blocking(move || handle_encode(filename));
         }
     }
 
@@ -158,25 +147,6 @@ pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Re
     Ok(())
 }
 
-pub async fn count_reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<u64> {
-    let (path, nocheck) = check_path(folderpath)?;
-
-    let mut counter: u64 = 0;
-    let stream = conn.get_toencode_stream().await?;
-    pin_mut!(stream);
-
-    while let Some(Ok(row)) = stream.next().await {
-        if let Some(file) = row.get_value(0)?.as_text() {
-            let filename = Path::new(file).canonicalize()?;
-            if nocheck || filename.starts_with(&path) {
-                counter += 1;
-            }
-        }
-    }
-
-    Ok(counter)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,15 +161,23 @@ mod tests {
         std::fs::remove_file("temp3.db").unwrap();
     }
 
-    #[tokio::test]
-    async fn test_reencode_lots_of_files() {
-        let conn = Database::new("temp4.db").await.unwrap();
-        let path = PathBuf::from("./testfiles");
-        index_files_recursively(Path::new("./testfiles"), &conn)
-            .await
+    #[test]
+    fn test_reencode_lots_of_files() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .max_blocking_threads(4)
+            .enable_all()
+            .build()
             .unwrap();
-        println!("\n{}", count_reencode_files(None, &conn).await.unwrap());
-        reencode_files(Some(&path), &conn).await.unwrap();
+        runtime.block_on(async move {
+            let conn = Database::new("temp4.db").await.unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn)
+                .await
+                .unwrap();
+            println!("\n{}", conn.get_toencode_number().await.unwrap());
+            reencode_files(&conn).await.unwrap();
+            println!("\n{}", conn.get_toencode_number().await.unwrap());
+        });
+
         std::fs::remove_file("temp4.db").unwrap();
     }
 }

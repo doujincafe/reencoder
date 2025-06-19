@@ -90,7 +90,7 @@ fn main() -> Result<()> {
         let path = args.get_one::<PathBuf>("path");
 
         if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-            let count = files::count_reencode_files(path, &conn).await.unwrap();
+            let count = conn.get_toencode_number().await?;
             println!("Files to reencode:\t{count}");
         } else if let Some(realpath) = path {
             if !args.get_flag("doit") {
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
         }
 
         if args.get_flag("doit") {
-            files::reencode_files(path, &conn).await?;
+            files::reencode_files(&conn).await?;
         }
         Ok::<(), anyhow::Error>(())
     })?;
