@@ -3,7 +3,7 @@ use directories::BaseDirs;
 use futures_util::Stream;
 use libsql::{Builder, Connection, params};
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -26,10 +26,14 @@ pub struct Database(pub Connection);
 
 impl Database {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Builder::new_local(path).build().await?.connect()?;
-        conn.execute(TABLE_CREATE, ()).await?;
+        if path.as_ref().is_file() {
+            let conn = Builder::new_local(path).build().await?.connect()?;
+            conn.execute(TABLE_CREATE, ()).await?;
 
-        Ok(Database(conn))
+            Ok(Database(conn))
+        } else {
+            Err(anyhow!("Not a file"))
+        }
     }
 
     pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
@@ -102,26 +106,17 @@ impl Database {
         }
     }
 
-    pub async fn clean_files(&self) -> Result<()> {
-        let mut tasks = tokio::task::JoinSet::new();
+    pub async fn init_clean_files(
+        &self,
+    ) -> Result<impl Stream<Item = libsql::Result<libsql::Row>>> {
         self.0.execute(DEDUPE_DB, ()).await?;
-        let mut query_res = self.0.query(FETCH_FILES, ()).await?;
-        while let Ok(Some(row)) = query_res.next().await {
-            let path = PathBuf::from(row.get_str(0)?);
-            let conn = self.0.clone();
-            tasks.spawn(async move {
-                if !path.exists() {
-                    let _ = conn
-                        .execute(REMOVE_FILE, params!(path.to_str().unwrap()))
-                        .await;
-                }
-            });
-        }
+        Ok(self.0.query(FETCH_FILES, ()).await?.into_stream())
+    }
 
-        tasks.join_all().await;
-
-        self.0.execute("VACUUM", ()).await?;
-
+    pub async fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+        self.0
+            .execute(REMOVE_FILE, params!(filename.as_ref().to_str().unwrap()))
+            .await?;
         Ok(())
     }
 

@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-#[cfg(not(test))]
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pin_utils::pin_mut;
 use std::{
     error::Error,
@@ -15,8 +14,8 @@ use walkdir::WalkDir;
 
 use crate::{db::Database, flac::encode_file};
 
-#[cfg(not(test))]
-const BAR_TEMPLATE: &str = "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
+const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
+const SPINNER_TEMPLATE: &str = "Removed from db: {pos:.green}";
 
 #[derive(Debug)]
 pub struct FileError {
@@ -86,8 +85,7 @@ pub async fn index_files_recursively(
 
     let mut tasks: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
 
-    #[cfg(not(test))]
-    let bar = ProgressBar::new(0)
+    let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
@@ -99,15 +97,13 @@ pub async fn index_files_recursively(
                 if let Some(ext) = path.extension() {
                     if ext == "flac" {
                         let newconn = conn.clone();
-                        #[cfg(not(test))]
+
                         let newbar = bar.clone();
                         tasks.spawn(async move {
                             handle_file(path, newconn).await?;
-                            #[cfg(not(test))]
                             newbar.inc(1);
                             Ok(())
                         });
-                        #[cfg(not(test))]
                         bar.inc_length(1);
                     }
                 }
@@ -127,7 +123,6 @@ pub async fn index_files_recursively(
                 }
             }
 
-            #[cfg(not(test))]
             bar.abandon_with_message("Indexing aborted");
             return Ok(())
         },
@@ -140,7 +135,6 @@ pub async fn index_files_recursively(
         }
     }
 
-    #[cfg(not(test))]
     bar.finish_with_message("Finished indexing");
     Ok(())
 }
@@ -151,17 +145,18 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
 
     let mut tasks = JoinSet::new();
 
-    #[cfg(not(test))]
-    let bar = ProgressBar::new(conn.get_toencode_number().await?)
-        .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
-        .with_message("Reencoding");
+    let bar = ProgressBar::with_draw_target(
+        Some(conn.get_toencode_number().await?),
+        ProgressDrawTarget::stdout_with_hz(60),
+    )
+    .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
+    .with_message("Indexing");
 
     while let Some(Ok(row)) = stream.next().await {
         if let Some(file) = row.get_value(0)?.as_text() {
             let filename = Path::new(file).canonicalize()?;
             if filename.exists() {
                 let newconn = conn.clone();
-                #[cfg(not(test))]
                 let newbar = bar.clone();
                 tasks.spawn(async move {
                     let file = filename.clone();
@@ -174,7 +169,6 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
                     if let Err(error) = newconn.update_file(&filename).await {
                         return Err(anyhow!(FileError::new(&filename, error)));
                     };
-                    #[cfg(not(test))]
                     newbar.inc(1);
                     Ok(())
                 });
@@ -194,7 +188,6 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
                 }
             }
 
-            #[cfg(not(test))]
             bar.abandon_with_message("Reencoding aborted");
             return Ok(())
         },
@@ -207,8 +200,39 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
         }
     }
 
-    #[cfg(not(test))]
     bar.finish_with_message("Finished encoding");
+
+    Ok(())
+}
+
+pub async fn clean_files(conn: &Database) -> Result<()> {
+    let mut tasks: JoinSet<std::result::Result<(), anyhow::Error>> = JoinSet::new();
+
+    let query_res = conn.init_clean_files().await?;
+    pin_mut!(query_res);
+
+    let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
+        .with_style(ProgressStyle::with_template(SPINNER_TEMPLATE)?);
+
+    while let Some(Ok(row)) = query_res.next().await {
+        let path = PathBuf::from(row.get_str(0)?);
+        let newconn = conn.clone();
+
+        let newspinner = spinner.clone();
+        tasks.spawn(async move {
+            if !path.exists() {
+                newconn.remove_file(path).await?;
+                newspinner.inc(1);
+            }
+            Ok(())
+        });
+    }
+
+    tasks.join_all().await;
+
+    spinner.finish();
+
+    conn.0.execute("VACUUM", ()).await?;
 
     Ok(())
 }

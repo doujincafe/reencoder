@@ -4,6 +4,7 @@ mod flac;
 use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
+use console::style;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -101,7 +102,7 @@ fn main() -> Result<()> {
 
         if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
             let count = conn.get_toencode_number().await?;
-            println!("Files to reencode:\t{count}");
+            println!("Files to reencode:\t{}", style(count).green());
             return Ok(());
         }
 
@@ -115,7 +116,7 @@ fn main() -> Result<()> {
         }
 
         if args.get_flag("clean") {
-            conn.clean_files().await?;
+            files::clean_files(&conn).await?;
         }
 
         if canceltoken.is_cancelled() {
