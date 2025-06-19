@@ -105,16 +105,16 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
     Ok(())
 }
 
-fn check_path(folderpath: Option<&PathBuf>) -> (PathBuf, bool) {
+fn check_path(folderpath: Option<&PathBuf>) -> Result<(PathBuf, bool)> {
     if let Some(real_path) = folderpath {
-        (real_path.to_owned(), false)
+        Ok((real_path.canonicalize()?, false))
     } else {
-        (PathBuf::new(), true)
+        Ok((PathBuf::new(), true))
     }
 }
 
 pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<()> {
-    let (path, nocheck) = check_path(folderpath);
+    let (path, nocheck) = check_path(folderpath)?;
 
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
@@ -159,7 +159,7 @@ pub async fn reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Re
 }
 
 pub async fn count_reencode_files(folderpath: Option<&PathBuf>, conn: &Database) -> Result<u64> {
-    let (path, nocheck) = check_path(folderpath);
+    let (path, nocheck) = check_path(folderpath)?;
 
     let mut counter: u64 = 0;
     let stream = conn.get_toencode_stream().await?;

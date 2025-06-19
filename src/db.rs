@@ -32,10 +32,9 @@ impl Database {
     }
 
     pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        let abs_filename = filename.as_ref().canonicalize()?;
-        let toencode = !matches!(get_vendor(&abs_filename)?.as_str(), CURRENT_VENDOR);
+        let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
 
-        let modtime = abs_filename
+        let modtime = filename.as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -44,7 +43,7 @@ impl Database {
         self.0
             .execute(
                 ADD_NEW_ITEM,
-                params![abs_filename.to_str().unwrap(), toencode, modtime],
+                params![filename.as_ref().to_str().unwrap(), toencode, modtime],
             )
             .await?;
 
@@ -52,9 +51,7 @@ impl Database {
     }
 
     pub async fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        let abs_filename = filename.as_ref().canonicalize()?;
-
-        let modtime = abs_filename
+        let modtime = filename.as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -63,7 +60,7 @@ impl Database {
         self.0
             .execute(
                 REPLACE_ITEM,
-                params![abs_filename.to_str().unwrap(), false, modtime],
+                params![filename.as_ref().to_str().unwrap(), false, modtime],
             )
             .await?;
 
@@ -71,11 +68,9 @@ impl Database {
     }
 
     pub async fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
-        let abs_filename = filename.as_ref().canonicalize()?;
-
         if let Some(row) = self
             .0
-            .query(CHECK_FILE, params!(abs_filename.to_str().unwrap()))
+            .query(CHECK_FILE, params!(filename.as_ref().to_str().unwrap()))
             .await?
             .next()
             .await?
@@ -87,11 +82,9 @@ impl Database {
     }
 
     pub async fn get_modtime(&self, filename: impl AsRef<Path>) -> Result<u64> {
-        let abs_filename = filename.as_ref().canonicalize()?;
-
         if let Some(row) = self
             .0
-            .query(FETCH_MODTIME, params!(abs_filename.to_str().unwrap()))
+            .query(FETCH_MODTIME, params!(filename.as_ref().to_str().unwrap()))
             .await?
             .next()
             .await?
@@ -111,7 +104,7 @@ impl Database {
         self.0.execute(DEDUPE_DB, ()).await?;
         let mut query_res = self.0.query(FETCH_FILES, ()).await?;
         while let Ok(Some(row)) = query_res.next().await {
-            let path = Path::new(row.get_str(0)?).canonicalize()?;
+            let path = Path::new(row.get_str(0)?).to_path_buf();
             let conn = self.0.clone();
             tasks.spawn(async move {
                 if !path.exists() {
