@@ -13,11 +13,7 @@ use walkdir::WalkDir;
 
 use crate::{db::Database, flac::encode_file};
 
-const INDEXBAR_TEMPLATE: &str =
-    "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
-
-const REENCODEBAR_TEMPLATE: &str =
-    "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
+const BAR_TEMPLATE: &str = "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
 
 #[derive(Debug)]
 pub struct FileError {
@@ -38,7 +34,7 @@ impl Display for FileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "error: {}\t on file {}",
+            "error: {}\ton file {}",
             self.error,
             self.file.to_string_lossy()
         )
@@ -84,7 +80,7 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
     let mut tasks = JoinSet::new();
 
     let bar = ProgressBar::new(0)
-        .with_style(ProgressStyle::with_template(INDEXBAR_TEMPLATE)?.progress_chars("#>-"))
+        .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
     let _ = WalkDir::new(abspath)
@@ -124,7 +120,7 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
     let mut tasks = JoinSet::new();
 
     let bar = ProgressBar::new(conn.get_toencode_number().await?)
-        .with_style(ProgressStyle::with_template(REENCODEBAR_TEMPLATE)?.progress_chars("#>-"))
+        .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Reencoding");
 
     while let Some(Ok(row)) = stream.next().await {
