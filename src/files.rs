@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
+#[allow(unused_imports)]
 use indicatif::{ProgressBar, ProgressStyle};
 use pin_utils::pin_mut;
 use std::{
@@ -13,6 +14,7 @@ use walkdir::WalkDir;
 
 use crate::{db::Database, flac::encode_file};
 
+#[allow(dead_code)]
 const BAR_TEMPLATE: &str = "{msg} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
 
 #[derive(Debug)]
@@ -79,6 +81,7 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
 
     let mut tasks = JoinSet::new();
 
+    #[cfg(not(test))]
     let bar = ProgressBar::new(0)
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
@@ -92,6 +95,7 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
                     if ext == "flac" {
                         let newconn = conn.clone();
                         tasks.spawn(async move { handle_file(path, newconn).await });
+                        #[cfg(not(test))]
                         bar.inc_length(1);
                     }
                 }
@@ -104,11 +108,13 @@ pub async fn index_files_recursively(path: impl AsRef<Path>, conn: &Database) ->
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
             _ => {
+                #[cfg(not(test))]
                 bar.inc(1);
             }
         }
     }
 
+    #[cfg(not(test))]
     bar.finish_with_message("Finished indexing");
     Ok(())
 }
@@ -119,6 +125,7 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
 
     let mut tasks = JoinSet::new();
 
+    #[cfg(not(test))]
     let bar = ProgressBar::new(conn.get_toencode_number().await?)
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Reencoding");
@@ -147,11 +154,13 @@ pub async fn reencode_files(conn: &Database) -> Result<()> {
             Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
             Err(error) => eprintln!("Error encountered:\t{error}"),
             _ => {
+                #[cfg(not(test))]
                 bar.inc(1);
             }
         }
     }
 
+    #[cfg(not(test))]
     bar.finish_with_message("Finished encoding");
 
     Ok(())
