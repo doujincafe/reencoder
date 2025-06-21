@@ -241,7 +241,7 @@ pub async fn clean_files(conn: &Database) -> Result<()> {
     #[cfg(not(test))]
     spinner.finish();
 
-    conn.0.execute("VACUUM", ()).await?;
+    conn.vaccum().await?;
 
     Ok(())
 }

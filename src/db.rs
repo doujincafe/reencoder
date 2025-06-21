@@ -22,7 +22,7 @@ const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 
 #[derive(Debug, Clone)]
-pub struct Database(pub Connection);
+pub struct Database(Connection);
 
 impl Database {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
@@ -131,6 +131,11 @@ impl Database {
             .await?
             .unwrap()
             .get::<u64>(0)?)
+    }
+
+    pub async fn vaccum(&self) -> Result<()> {
+        self.0.execute("VACUUM", ()).await?;
+        Ok(())
     }
 }
 
