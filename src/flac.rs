@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use flac_bound::{FlacEncoder, WriteWrapper};
-use i24::i24;
 use md5::{Digest, Md5};
 use metaflac::{Block, Tag};
 use std::{
@@ -73,18 +72,49 @@ impl FileEncoder {
         self.filename.clone().with_extension("tmp")
     }
 
-    fn encode(self, encoder: FlacEncoder) -> Result<()> {
-        let filename = self.filename.clone();
-        let tempname = self.temp_name();
+    fn encode(&mut self, mut encoder: FlacEncoder) -> Result<Vec<u8>> {
+        let mut buffer: Vec<i32> = Vec::new();
+        let mut hasher = Md5::new();
+        let track_id = self.format.default_track(TrackType::Audio).unwrap().id;
+        let offset = self.streamdata.bits_per_sample.value();
 
-        let hash = match self.streamdata.bits_per_sample {
-            Bps::_16 => encode_cycle_16(self.format, self.decoder, encoder)?,
-            Bps::_24 => encode_cycle_24(self.format, self.decoder, encoder)?,
-            Bps::_32 => encode_cycle_32(self.format, self.decoder, encoder)?,
-        };
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => break,
+                Err(error) => return Err(error.into()),
+            };
 
-        let tags = Tag::read_from_path(&filename)?;
-        let mut output = Tag::read_from_path(&tempname)?;
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            if let GenericAudioBufferRef::S32(buf) = self.decoder.decode(&packet)? {
+                for sample in buf.iter_interleaved() {
+                    let real_sample = sample >> (32 - offset);
+                    hasher.update(real_sample.to_le_bytes());
+                    buffer.push(real_sample);
+                }
+                encoder
+                    .process_interleaved(&buffer, buf.samples_planar() as u32)
+                    .unwrap();
+                buffer.clear();
+            } else {
+                return Err(anyhow!("unsupported codec"));
+            }
+        }
+
+        if let Err(enc) = encoder.finish() {
+            return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
+        }
+
+        Ok(hasher.finalize().to_vec())
+    }
+
+    fn write_tags(&self, hash: Vec<u8>) -> Result<()> {
+        let tags = Tag::read_from_path(&self.filename)?;
+        let mut output = Tag::read_from_path(self.temp_name())?;
+
         let mut streaminfo = tags.get_streaminfo().unwrap().clone();
 
         streaminfo.md5 = hash;
@@ -104,10 +134,7 @@ impl FileEncoder {
             }
         }
 
-        output.write_to_path(&tempname)?;
-
-        std::fs::rename(tempname, filename)?;
-
+        output.write_to_path(self.temp_name())?;
         Ok(())
     }
 }
@@ -147,142 +174,8 @@ fn init_decoder(
     Ok((format, decoder, config))
 }
 
-fn encode_cycle_16(
-    mut format: BoxedFormatReader,
-    mut decoder: BoxedAudioDecoder,
-    mut encoder: FlacEncoder,
-) -> Result<Vec<u8>> {
-    let mut buffer: Vec<i32> = Vec::new();
-    let mut hasher = Md5::new();
-    let track_id = format.default_track(TrackType::Audio).unwrap().id;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(error) => return Err(error.into()),
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
-            let _ = buf
-                .iter_interleaved()
-                .map(|sample| {
-                    let real_sample = sample >> 16;
-                    hasher.update(i16::try_from(real_sample).unwrap().to_le_bytes());
-                    buffer.push(real_sample);
-                })
-                .collect::<Vec<_>>();
-            encoder
-                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
-                .unwrap();
-            buffer.clear();
-        } else {
-            return Err(anyhow!("unsupported codec"));
-        }
-    }
-
-    if let Err(enc) = encoder.finish() {
-        return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
-    }
-
-    Ok(hasher.finalize().to_vec())
-}
-
-fn encode_cycle_24(
-    mut format: BoxedFormatReader,
-    mut decoder: BoxedAudioDecoder,
-    mut encoder: FlacEncoder,
-) -> Result<Vec<u8>> {
-    let mut buffer: Vec<i32> = Vec::new();
-    let mut hasher = Md5::new();
-    let track_id = format.default_track(TrackType::Audio).unwrap().id;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(error) => return Err(error.into()),
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
-            let _ = buf
-                .iter_interleaved()
-                .map(|sample| {
-                    let real_sample = sample >> 8;
-                    hasher.update(i24::try_from(real_sample).unwrap().to_le_bytes());
-                    buffer.push(real_sample);
-                })
-                .collect::<Vec<_>>();
-            encoder
-                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
-                .unwrap();
-            buffer.clear();
-        } else {
-            return Err(anyhow!("unsupported codec"));
-        }
-    }
-
-    if let Err(enc) = encoder.finish() {
-        return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
-    }
-
-    Ok(hasher.finalize().to_vec())
-}
-
-fn encode_cycle_32(
-    mut format: BoxedFormatReader,
-    mut decoder: BoxedAudioDecoder,
-    mut encoder: FlacEncoder,
-) -> Result<Vec<u8>> {
-    let mut buffer: Vec<i32> = Vec::new();
-    let mut hasher = Md5::new();
-    let track_id = format.default_track(TrackType::Audio).unwrap().id;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(error) => return Err(error.into()),
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        if let GenericAudioBufferRef::S32(buf) = decoder.decode(&packet)? {
-            let _ = buf
-                .iter_interleaved()
-                .map(|sample| {
-                    hasher.update(sample.to_le_bytes());
-                    buffer.push(sample);
-                })
-                .collect::<Vec<_>>();
-            encoder
-                .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
-                .unwrap();
-            buffer.clear();
-        } else {
-            return Err(anyhow!("unsupported codec"));
-        }
-    }
-
-    if let Err(enc) = encoder.finish() {
-        return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
-    }
-
-    Ok(hasher.finalize().to_vec())
-}
-
 pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
-    let filencoder = FileEncoder::new(filename)?;
+    let mut filencoder = FileEncoder::new(filename)?;
     let temp_name = filencoder.temp_name();
 
     if temp_name.exists() {
@@ -301,7 +194,10 @@ pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
         .init_write(&mut outw)
         .unwrap();
 
-    filencoder.encode(enc)
+    let hash = filencoder.encode(enc)?;
+    filencoder.write_tags(hash)?;
+    std::fs::remove_file(filencoder.temp_name())?;
+    Ok(())
 }
 
 pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {

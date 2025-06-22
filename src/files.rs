@@ -92,35 +92,34 @@ pub async fn index_files_recursively(
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
-    let _ = WalkDir::new(abspath)
-        .into_iter()
-        .map(|file| {
-            let path = file.unwrap().into_path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "flac" {
-                        let newconn = conn.clone();
-                        let newtoken = canceltoken.clone();
+    for entry in WalkDir::new(abspath) {
+        let path = entry?.into_path();
+        if !path.is_file() {
+            continue;
+        }
+
+        if path.extension().is_some_and(|x| x == "flac") {
+            let newconn = conn.clone();
+            let newtoken = canceltoken.clone();
+            #[cfg(not(test))]
+            let newbar = bar.clone();
+
+            tasks.spawn(async move {
+                tokio::select! {
+                    _ = newtoken.cancelled() => Ok(()),
+                    res = async {
+                        handle_file(path, newconn).await?;
                         #[cfg(not(test))]
-                        let newbar = bar.clone();
-                        tasks.spawn(async move {
-                            tokio::select! {
-                                _ = newtoken.cancelled() => Ok(()),
-                                res = async {
-                                    handle_file(path, newconn).await?;
-                                    #[cfg(not(test))]
-                                    newbar.inc(1);
-                                    Ok(())
-                                } => res
-                            }
-                        });
-                        #[cfg(not(test))]
-                        bar.inc_length(1);
-                    }
+                        newbar.inc(1);
+                        Ok(())
+                    } => res
                 }
-            }
-        })
-        .collect::<Vec<_>>();
+            });
+
+            #[cfg(not(test))]
+            bar.inc_length(1);
+        }
+    }
 
     while let Some(task) = tasks.join_next().await {
         match task {
@@ -132,9 +131,9 @@ pub async fn index_files_recursively(
     #[cfg(not(test))]
     {
         if canceltoken.is_cancelled() {
-            bar.abandon_with_message("Indexing abandoned");
+            bar.abandon_with_message("Indexing aborted");
         } else {
-            bar.finish_with_message("Finished encoding");
+            bar.finish_with_message("Finished indexing");
         }
     }
     Ok(())
@@ -171,9 +170,10 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
                     }
                     res = async {
                         if let Err(error) = tokio::task::spawn_blocking(move || encode_file(file)).await? {
+                            let _ = std::fs::remove_file(filename.with_extension("tmp.metadata_edit"));
+                            let _ = std::fs::remove_file(filename.with_extension("tmp"));
                             return Err(anyhow!(FileError::new(&filename, error)));
                         };
-
                         if let Err(error) = newconn.update_file(&filename).await {
                             return Err(anyhow!(FileError::new(&filename, error)));
                         };
@@ -197,7 +197,7 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
     #[cfg(not(test))]
     {
         if canceltoken.is_cancelled() {
-            bar.abandon_with_message("Reencoding abandoned");
+            bar.abandon_with_message("Reencoding aborted");
         } else {
             bar.finish_with_message("Finished encoding");
         }
