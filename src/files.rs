@@ -100,13 +100,19 @@ pub async fn index_files_recursively(
                 if let Some(ext) = path.extension() {
                     if ext == "flac" {
                         let newconn = conn.clone();
+                        let newtoken = canceltoken.clone();
                         #[cfg(not(test))]
                         let newbar = bar.clone();
                         tasks.spawn(async move {
-                            handle_file(path, newconn).await?;
-                            #[cfg(not(test))]
-                            newbar.inc(1);
-                            Ok(())
+                            tokio::select! {
+                                _ = newtoken.cancelled() => Ok(()),
+                                res = async {
+                                    handle_file(path, newconn).await?;
+                                    #[cfg(not(test))]
+                                    newbar.inc(1);
+                                    Ok(())
+                                } => res
+                            }
                         });
                         #[cfg(not(test))]
                         bar.inc_length(1);
@@ -116,23 +122,7 @@ pub async fn index_files_recursively(
         })
         .collect::<Vec<_>>();
 
-    while let Some(task) = tokio::select! {
-        _ = canceltoken.cancelled() => {
-            tasks.abort_all();
-
-            while let Some(task) = tasks.join_next().await {
-                match task {
-                    Ok(Err(error)) => eprintln!("{error}"),
-                    Err(error) => if !error.is_cancelled() {eprintln!("Error encountered:\t{}", error)},
-                    _ => {}
-                }
-            }
-            #[cfg(not(test))]
-            bar.abandon_with_message("Indexing aborted");
-            return Ok(())
-        },
-        task = tasks.join_next() => task
-    } {
+    while let Some(task) = tasks.join_next().await {
         match task {
             Ok(Err(error)) => eprintln!("{error}"),
             Err(error) => eprintln!("Error encountered:\t{}", error),
@@ -140,7 +130,13 @@ pub async fn index_files_recursively(
         }
     }
     #[cfg(not(test))]
-    bar.finish_with_message("Finished indexing");
+    {
+        if canceltoken.is_cancelled() {
+            bar.abandon_with_message("Indexing abandoned");
+        } else {
+            bar.finish_with_message("Finished encoding");
+        }
+    }
     Ok(())
 }
 
@@ -159,56 +155,53 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
     .with_message("Reencoding");
 
     while let Some(Ok(row)) = stream.next().await {
-        if let Some(file) = row.get_value(0)?.as_text() {
-            let filename = Path::new(file).canonicalize()?;
-            if filename.exists() {
-                let newconn = conn.clone();
-                #[cfg(not(test))]
-                let newbar = bar.clone();
-                tasks.spawn(async move {
-                    let file = filename.clone();
-                    if let Err(error) =
-                        tokio::task::spawn_blocking(move || encode_file(file)).await?
-                    {
-                        return Err(anyhow!(FileError::new(&filename, error)));
-                    };
+        let filename = Path::new(row.get_str(0)?).canonicalize()?;
+        if filename.exists() {
+            let newconn = conn.clone();
+            let newtoken = canceltoken.clone();
+            #[cfg(not(test))]
+            let newbar = bar.clone();
+            tasks.spawn(async move {
+                let file = filename.clone();
+                tokio::select! {
+                    _ = newtoken.cancelled() => {
+                        let _ = std::fs::remove_file(filename.with_extension("tmp.metadata_edit"));
+                        let _ = std::fs::remove_file(filename.with_extension("tmp"));
+                        Ok(())
+                    }
+                    res = async {
+                        if let Err(error) = tokio::task::spawn_blocking(move || encode_file(file)).await? {
+                            return Err(anyhow!(FileError::new(&filename, error)));
+                        };
 
-                    if let Err(error) = newconn.update_file(&filename).await {
-                        return Err(anyhow!(FileError::new(&filename, error)));
-                    };
-                    #[cfg(not(test))]
-                    newbar.inc(1);
-                    Ok(())
-                });
-            }
+                        if let Err(error) = newconn.update_file(&filename).await {
+                            return Err(anyhow!(FileError::new(&filename, error)));
+                        };
+                        #[cfg(not(test))]
+                        newbar.inc(1);
+                        Ok(())
+                    } => res
+                }
+            });
         }
     }
 
-    while let Some(task) = tokio::select! {
-        _ = canceltoken.cancelled() => {
-            tasks.abort_all();
-
-            while let Some(task) = tasks.join_next().await {
-                match task {
-                    Ok(Err(error)) => eprintln!("{error}"),
-                    Err(error) => if !error.is_cancelled() {eprintln!("Error encountered:\t{}", error)},
-                    _ => {}
-                }
-            }
-            #[cfg(not(test))]
-            bar.abandon_with_message("Reencoding aborted");
-            return Ok(())
-        },
-        task = tasks.join_next() => task
-    } {
+    while let Some(task) = tasks.join_next().await {
         match task {
             Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
             Err(error) => eprintln!("Error encountered:\t{error}"),
             _ => {}
         }
     }
+
     #[cfg(not(test))]
-    bar.finish_with_message("Finished encoding");
+    {
+        if canceltoken.is_cancelled() {
+            bar.abandon_with_message("Reencoding abandoned");
+        } else {
+            bar.finish_with_message("Finished encoding");
+        }
+    }
 
     Ok(())
 }
