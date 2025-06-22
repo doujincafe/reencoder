@@ -196,7 +196,7 @@ pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
 
     let hash = filencoder.encode(enc)?;
     filencoder.write_tags(hash)?;
-    std::fs::remove_file(filencoder.temp_name())?;
+    std::fs::rename(filencoder.temp_name(), filencoder.filename)?;
     Ok(())
 }
 
