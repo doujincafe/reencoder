@@ -40,3 +40,4 @@ symphonia = { git = "https://github.com/sscobici/Symphonia.git", rev = "2213f274
     "flac",
 ] }
 console = { version = "0.15.11", features = ["windows-console-colors"] }
+libflac-sys = { version = "0.3.3", default-features = false, features = ["build-flac"] }
