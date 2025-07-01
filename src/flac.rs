@@ -1,25 +1,31 @@
-mod decoder;
-
 use anyhow::{Result, anyhow};
 use flac_bound::{FlacEncoder, WriteWrapper};
-/* use md5::Digest; */
-use metaflac::Tag;
-use std::{fs::File, path::Path};
-
-use crate::flac::decoder::FlacDecoder;
+use md5::{Digest, Md5};
+use metaflac::{Block, Tag};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
+use symphonia::core::{
+    audio::{Audio, GenericAudioBufferRef},
+    codecs::audio::AudioDecoder,
+    formats::{FormatOptions, FormatReader, TrackType, probe::Hint},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+};
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
-/* type BoxedFormatReader = Box<dyn FormatReader>;
-type BoxedAudioDecoder = Box<dyn AudioDecoder + 'static>; */
+type BoxedFormatReader = Box<dyn FormatReader>;
+type BoxedAudioDecoder = Box<dyn AudioDecoder + 'static>;
 
-/* pub struct StreamConfig {
+struct StreamConfig {
     channels: u32,
     bits_per_sample: Bps,
     sample_rate: u32,
 }
 
-pub enum Bps {
+enum Bps {
     _16,
     _24,
     _32,
@@ -42,9 +48,9 @@ impl Bps {
             Bps::_32 => 32,
         }
     }
-} */
+}
 
-/* struct FileEncoder {
+struct FileEncoder {
     filename: PathBuf,
     streamdata: StreamConfig,
     format: BoxedFormatReader,
@@ -85,16 +91,8 @@ impl FileEncoder {
 
             if let GenericAudioBufferRef::S32(buf) = self.decoder.decode(&packet)? {
                 for sample in buf.iter_interleaved() {
-                    let mut real_sample = sample;
-                    if offset != 32 {
-                        real_sample = sample >> (32 - offset)
-                    }
-                    match offset {
-                        16 => hasher.update(i16::try_from(real_sample)?.to_le_bytes()),
-                        24 => hasher
-                            .update(i24::i24::try_from_i32(real_sample).unwrap().to_le_bytes()),
-                        _ => hasher.update(real_sample.to_le_bytes()),
-                    }
+                    let real_sample = sample >> (32 - offset);
+                    hasher.update(real_sample.to_le_bytes());
                     buffer.push(real_sample);
                 }
                 encoder
@@ -174,10 +172,10 @@ fn init_decoder(
     };
 
     Ok((format, decoder, config))
-} */
+}
 
 pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
-    /* let mut filencoder = FileEncoder::new(filename)?;
+    let mut filencoder = FileEncoder::new(filename)?;
     let temp_name = filencoder.temp_name();
 
     if temp_name.exists() {
@@ -199,32 +197,7 @@ pub fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
     let hash = filencoder.encode(enc)?;
     filencoder.write_tags(hash)?;
     std::fs::rename(filencoder.temp_name(), filencoder.filename)?;
-    Ok(()) */
-
-    let decoder = FlacDecoder::new();
-    let mut buffer: Vec<i32> = Vec::new();
-    decoder.init_decode_from_file(&filename, &mut buffer)?;
-
-    let temp_name = filename.as_ref().with_extension("tmp");
-    let mut outf = File::create(temp_name)?;
-    let mut outw = WriteWrapper(&mut outf);
-    let mut enc = FlacEncoder::new()
-        .unwrap()
-        .channels(decoder.get_channels())
-        .bits_per_sample(decoder.get_bps())
-        .sample_rate(decoder.get_samplerate())
-        .compression_level(8)
-        .verify(false)
-        .init_write(&mut outw)
-        .unwrap();
-
-    while decoder.decode_frame().is_ok() {
-        enc.process_interleaved(&buffer, buffer.iter().len() as u32 / decoder.get_channels())
-            .unwrap();
-        buffer.clear();
-    }
-
-    todo!()
+    Ok(())
 }
 
 pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {
@@ -258,8 +231,7 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(name).unwrap();
-        std::fs::rename(tempname, name).unwrap();
+        std::fs::remove_file(tempname).unwrap();
         assert_eq!(target_md5, encoded_md5);
     }
 
@@ -281,8 +253,7 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(name).unwrap();
-        std::fs::rename(tempname, name).unwrap();
+        std::fs::remove_file(tempname).unwrap();
         assert_eq!(target_md5, encoded_md5);
     }
 
@@ -304,8 +275,7 @@ mod tests {
             .unwrap()
             .md5
             .clone();
-        std::fs::remove_file(name).unwrap();
-        std::fs::rename(tempname, name).unwrap();
+        std::fs::remove_file(tempname).unwrap();
         assert_eq!(target_md5, encoded_md5);
     }
 }

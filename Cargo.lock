@@ -595,7 +595,6 @@ dependencies = [
  "futures-util",
  "i24",
  "indicatif",
- "libflac-sys",
  "libsql",
  "md-5",
  "metaflac",
