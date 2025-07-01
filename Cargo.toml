@@ -18,7 +18,7 @@ flac-bound = { version = "0.5.0", features = [
     "libflac-noogg",
 ], default-features = false }
 futures-util = "0.3.31"
-i24 = "2.1.0"
+i24 = { version = "2.1.0", features = ["std"] }
 indicatif = { version = "0.17.11", features = [
     "tokio",
     "improved_unicode",
@@ -26,7 +26,6 @@ indicatif = { version = "0.17.11", features = [
 ] }
 libsql = { version = "0.9.11" }
 md-5 = "0.10.6"
-metaflac = "0.2.8"
 pin-utils = "0.1.0"
 tokio = { version = "1.45.1", features = [
     "macros",
@@ -36,7 +35,6 @@ tokio = { version = "1.45.1", features = [
 ] }
 tokio-util = "0.7.15"
 walkdir = "2.5.0"
-symphonia = { git = "https://github.com/sscobici/Symphonia.git", rev = "2213f274c3e7231fbd7b08aa9347049852915b29", default-features = false, features = [
-    "flac",
-] }
 console = { version = "0.15.11", features = ["windows-console-colors"] }
+claxon = { git = "https://github.com/justjakka/claxon.git" }
+metaflac = "0.2.8"

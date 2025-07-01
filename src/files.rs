@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
-use crate::{db::Database, flac::encode_file};
+use crate::{db::Database, flac::handle_encode};
 
 #[cfg(not(test))]
 const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
@@ -169,7 +169,7 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
                         Ok(())
                     }
                     res = async {
-                        if let Err(error) = tokio::task::spawn_blocking(move || encode_file(file)).await? {
+                        if let Err(error) = tokio::task::spawn_blocking(move || handle_encode(file)).await? {
                             let _ = std::fs::remove_file(filename.with_extension("tmp.metadata_edit"));
                             let _ = std::fs::remove_file(filename.with_extension("tmp"));
                             return Err(anyhow!(FileError::new(&filename, error)));
