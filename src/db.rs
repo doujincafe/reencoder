@@ -1,14 +1,14 @@
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
+use libsql::{Builder, Connection, params};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, UNIX_EPOCH},
 };
-use turso::{Builder, Connection, Rows, params};
 
 use crate::flac::{CURRENT_VENDOR, get_vendor};
 
-const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY, toencode BOOLEAN NOT NULL, modtime INTEGER)";
+const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
 const ADD_NEW_ITEM: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
 const REPLACE_ITEM: &str = "REPLACE INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
 const TOENCODE_QUERY: &str = "SELECT path FROM flacs WHERE toencode";
@@ -80,7 +80,7 @@ impl Database {
             .next()
             .await?
         {
-            Ok(matches!(row.get_value(0)?, turso::Value::Integer(1)))
+            Ok(matches!(row.get_value(0)?, libsql::Value::Integer(1)))
         } else {
             Err(anyhow!("database error"))
         }
@@ -104,9 +104,14 @@ impl Database {
         }
     }
 
-    pub async fn init_clean_files(&self) -> Result<Rows, turso::Error> {
+    pub async fn init_clean_files(&self) -> Result<Vec<PathBuf>, libsql::Error> {
         self.0.execute(DEDUPE_DB, ()).await?;
-        self.0.query(FETCH_FILES, ()).await
+        let mut rows = self.0.query(FETCH_FILES, ()).await?;
+        let mut files = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
+        }
+        Ok(files)
     }
 
     pub async fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
@@ -116,8 +121,13 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_toencode_files(&self) -> Result<Rows, turso::Error> {
-        self.0.query(TOENCODE_QUERY, ()).await
+    pub async fn get_toencode_files(&self) -> Result<Vec<PathBuf>, libsql::Error> {
+        let mut rows = self.0.query(TOENCODE_QUERY, ()).await?;
+        let mut files = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
+        }
+        Ok(files)
     }
 
     pub async fn get_toencode_number(&self) -> Result<i64> {

@@ -1,15 +1,8 @@
 use anyhow::{Result, anyhow};
-use futures_util::StreamExt;
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use pin_utils::pin_mut;
 use rayon::prelude::*;
-use smol::{
-    Executor,
-    fs::{File, metadata},
-    stream,
-};
-use std::time;
+use smol::{Executor, fs::metadata};
 use std::{
     error::Error,
     fmt::Display,
@@ -17,9 +10,8 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
-    time::{Duration, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 use walkdir::WalkDir;
 
@@ -88,7 +80,7 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
 pub fn index_files_recursively(
     path: impl AsRef<Path>,
     conn: &Database,
-    running: Arc<AtomicBool>,
+    handler: Arc<AtomicBool>,
 ) -> Result<()> {
     if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
@@ -105,19 +97,19 @@ pub fn index_files_recursively(
     let mut tasks = Vec::new();
 
     for entry in WalkDir::new(abspath) {
-        if running.load(Ordering::SeqCst) {
+        if handler.load(Ordering::SeqCst) {
             let path = entry.unwrap().into_path();
             if !path.is_file() {
                 continue;
             }
             if path.extension().is_some_and(|x| x == "flac") {
                 let newconn = conn.clone();
-                let newrunning = running.clone();
+                let newhandler = handler.clone();
                 #[cfg(not(test))]
                 let newbar = bar.clone();
 
                 tasks.push(ex.spawn(async move {
-                    if newrunning.load(Ordering::SeqCst) {
+                    if newhandler.load(Ordering::SeqCst) {
                         match handle_file(&path, newconn).await {
                             Err(error) => Err(FileError::new(path, error)),
                             Ok(_) => {
@@ -140,7 +132,7 @@ pub fn index_files_recursively(
     }
 
     tasks.par_iter_mut().for_each(|task| {
-        if running.load(Ordering::SeqCst) {
+        if handler.load(Ordering::SeqCst) {
             if let Err(error) = smol::block_on(async { ex.run(task).await }) {
                 eprintln!("{error}")
             }
@@ -149,7 +141,7 @@ pub fn index_files_recursively(
 
     #[cfg(not(test))]
     {
-        if running.load(Ordering::SeqCst) {
+        if handler.load(Ordering::SeqCst) {
             bar.finish_with_message("Finished indexing");
         } else {
             bar.abandon_with_message("Indexing aborted");
@@ -158,16 +150,7 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-async fn get_reencode_vec(conn: &Database) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut rows = conn.get_toencode_files().await?;
-    while let Ok(Some(row)) = rows.next().await {
-        files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
-    }
-    Ok(files)
-}
-
-pub fn reencode_files(conn: &Database, running: Arc<AtomicBool>) -> Result<()> {
+pub fn reencode_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
         Some(smol::block_on(async { conn.get_toencode_number().await })?.try_into()?),
@@ -176,96 +159,52 @@ pub fn reencode_files(conn: &Database, running: Arc<AtomicBool>) -> Result<()> {
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    let files = smol::block_on(async { get_reencode_vec(conn).await })?;
+    let files = smol::block_on(async { conn.get_toencode_files().await })?;
 
     files.par_iter().for_each(|file| {
-        if running.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(3));
-            #[cfg(not(test))]
-            bar.inc(1);
-        } else {
-            eprintln!("{}", FileError::new(file, anyhow!("cancelled")))
+        if handler.load(Ordering::SeqCst) {
+            if let Err(error) = handle_encode(file) {
+                eprintln!("{}", FileError::new(file, error));
+            } else if let Err(error) = smol::block_on(async { conn.update_file(file).await }) {
+                eprintln!("{}", FileError::new(file, error));
+            }
         }
     });
 
     #[cfg(not(test))]
     {
-        if running.load(Ordering::SeqCst) {
+        if handler.load(Ordering::SeqCst) {
             bar.finish_with_message("Finished reencoding");
         } else {
             bar.abandon_with_message("Reencoding aborted");
         }
     }
     Ok(())
-
-    /* while let Some(Ok(row)) = stream.next().await {
-        let filename = Path::new(row.get_str(0)?).canonicalize()?;
-        if filename.exists() {
-            let newconn = conn.clone();
-            let newtoken = canceltoken.clone();
-            #[cfg(not(test))]
-            let newbar = bar.clone();
-            tasks.spawn(async move {
-                let file = filename.clone();
-                tokio::select! {
-                    _ = newtoken.cancelled() => {
-                        let _ = std::fs::remove_file(filename.with_extension("tmp.metadata_edit"));
-                        let _ = std::fs::remove_file(filename.with_extension("tmp"));
-                        Ok(())
-                    }
-                    res = async {
-                        if let Err(error) = tokio::task::spawn_blocking(move || handle_encode(file)).await? {
-                            let _ = std::fs::remove_file(filename.with_extension("tmp.metadata_edit"));
-                            let _ = std::fs::remove_file(filename.with_extension("tmp"));
-                            return Err(anyhow!(FileError::new(&filename, error)));
-                        };
-                        if let Err(error) = newconn.update_file(&filename).await {
-                            return Err(anyhow!(FileError::new(&filename, error)));
-                        };
-                        #[cfg(not(test))]
-                        newbar.inc(1);
-                        Ok(())
-                    } => res
-                }
-            });
-        }
-    } */
 }
 
-/* pub fn clean_files(conn: &Database) -> Result<()> {
-    let ex = Executor::new();
+pub fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
+    let files = smol::block_on(async { conn.init_clean_files().await })?;
 
-    let mut tasks: JoinSet<std::result::Result<(), anyhow::Error>> = JoinSet::new();
-
-    let query_res = conn.init_clean_files().await?;
-    pin_mut!(query_res);
     #[cfg(not(test))]
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(SPINNER_TEMPLATE)?);
 
-    while let Some(Ok(row)) = query_res.next().await {
-        let path = PathBuf::from(row.get_str(0)?);
-        let newconn = conn.clone();
-        #[cfg(not(test))]
-        let newspinner = spinner.clone();
-        tasks.spawn(async move {
-            if !path.exists() {
-                newconn.remove_file(path).await?;
-                #[cfg(not(test))]
-                newspinner.inc(1);
-            }
-            Ok(())
-        });
-    }
-
-    tasks.join_all().await;
+    files.par_iter().for_each(|file| {
+        if handler.load(Ordering::SeqCst) && !file.exists() {
+            if let Err(error) = smol::block_on(async { conn.remove_file(file).await }) {
+                eprintln!("{}", FileError::new(file, error))
+            };
+            #[cfg(not(test))]
+            spinner.inc(1);
+        }
+    });
     #[cfg(not(test))]
     spinner.finish();
 
-    conn.vaccum().await?;
+    smol::block_on(async { conn.vaccum().await })?;
 
     Ok(())
-} */
+}
 
 #[cfg(test)]
 mod tests {
@@ -276,30 +215,26 @@ mod tests {
     #[apply(test!)]
     async fn test_index_lots_of_files(ex: &Executor<'_>) {
         ex.spawn(async {
-            let running = Arc::new(AtomicBool::new(true));
-            let r = running.clone();
-
-            ctrlc::set_handler(move || {
-                r.store(false, Ordering::SeqCst);
-            })
-            .unwrap();
+            let handler = Arc::new(AtomicBool::new(true));
             let conn = Database::new("temp3.db").await.unwrap();
-            index_files_recursively(Path::new("./testfiles"), &conn, running).unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
             std::fs::remove_file("temp3.db").unwrap();
         })
         .await;
     }
 
-    /* #[apply(test!)]
+    #[apply(test!)]
     async fn test_reencode_lots_of_files(ex: &Executor<'_>) {
         ex.spawn(async {
+            let handler = Arc::new(AtomicBool::new(true));
             let conn = Database::new("temp4.db").await.unwrap();
-            index_files_recursively(Path::new("./testfiles"), &conn).unwrap();
+            let temp = handler.clone();
+            index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
-            reencode_files(&conn).unwrap();
+            reencode_files(&conn, handler).unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
             std::fs::remove_file("temp4.db").unwrap();
         })
         .await;
-    } */
+    }
 }
