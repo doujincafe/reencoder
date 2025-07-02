@@ -92,7 +92,9 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let dbpool = db::open_db(args.get_one::<PathBuf>("db"))?;
+    let threads = *args.get_one::<usize>("threads").unwrap();
+
+    let dbpool = db::open_db(args.get_one::<PathBuf>("db"), threads)?;
 
     let path = args.get_one::<PathBuf>("path");
 
@@ -104,7 +106,7 @@ fn main() -> Result<()> {
     }
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(*args.get_one::<usize>("threads").unwrap())
+        .num_threads(threads)
         .build()?;
 
     if let Some(realpath) = path {

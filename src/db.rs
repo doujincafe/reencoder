@@ -22,17 +22,20 @@ const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
-pub fn open_db(path: Option<impl AsRef<Path>>) -> Result<Pool<SqliteConnectionManager>> {
+pub fn open_db(
+    path: Option<impl AsRef<Path>>,
+    threads: usize,
+) -> Result<Pool<SqliteConnectionManager>> {
     if let Some(file) = path {
         let manager = SqliteConnectionManager::file(file);
-        let pool = Pool::builder().build(manager)?;
+        let pool = Pool::builder().max_size(threads as u32).build(manager)?;
         let conn = pool.get()?;
         conn.execute(TABLE_CREATE, ())?;
         Ok(pool)
     } else if let Some(base_dir) = BaseDirs::new() {
         let file = Path::new(base_dir.data_dir()).join("reencoder.db");
         let manager = SqliteConnectionManager::file(file);
-        let pool = Pool::builder().build(manager)?;
+        let pool = Pool::builder().max_size(threads as u32).build(manager)?;
         let conn = pool.get()?;
         conn.execute(TABLE_CREATE, ())?;
         Ok(pool)
@@ -160,7 +163,7 @@ mod tests {
         let dbname = String::from("temp1.db");
         let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
         let mut counter = 0;
-        let pool = open_db(Some(&dbname)).unwrap();
+        let pool = open_db(Some(&dbname), 10).unwrap();
         let conn = Database::new(pool.get().unwrap());
         for file in filenames {
             let _ = conn.insert_file(&file.to_string());
@@ -179,7 +182,7 @@ mod tests {
     fn check_update() {
         let dbname = String::from("temp2.db");
         let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-        let pool = open_db(Some(&dbname)).unwrap();
+        let pool = open_db(Some(&dbname), 10).unwrap();
         let conn = Database::new(pool.get().unwrap());
         for file in filenames {
             let _ = conn.insert_file(Path::new(file).canonicalize().unwrap());

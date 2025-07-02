@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_index_lots_of_files() {
         let handler = Arc::new(AtomicBool::new(true));
-        let pool = open_db(Some("temp3.db")).unwrap();
+        let pool = open_db(Some("temp3.db"), 10).unwrap();
         index_files_recursively(Path::new("./testfiles"), &pool, handler).unwrap();
         std::fs::remove_file("temp3.db").unwrap();
     }
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_reencode_lots_of_files() {
         let handler = Arc::new(AtomicBool::new(true));
-        let pool = open_db(Some("temp4.db")).unwrap();
+        let pool = open_db(Some("temp4.db"), 10).unwrap();
         let temp = handler.clone();
         index_files_recursively(Path::new("./testfiles"), &pool, temp).unwrap();
         let conn = Database::new(pool.get().unwrap());
