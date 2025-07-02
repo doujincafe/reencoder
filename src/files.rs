@@ -105,9 +105,7 @@ pub fn index_files_recursively(
         .into_iter()
         .par_bridge()
         .for_each(|entry| {
-            if !running.load(Ordering::SeqCst) {
-                return;
-            } else {
+            if running.load(Ordering::SeqCst) {
                 let path = entry.unwrap().into_path();
                 if !path.is_file() {
                     return;

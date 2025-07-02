@@ -18,12 +18,11 @@ flac-bound = { version = "0.5.0", features = [
     "libflac-noogg",
 ], default-features = false }
 i24 = { version = "2.1.0", features = ["std"] }
-indicatif = { version = "0.17.11", features = [
-    "tokio",
-    "improved_unicode",
-    "futures",
+indicatif = { version = "0.17.11", features = ["improved_unicode", "futures"] }
+libsql = { version = "0.9.11", default-features = false, features = [
+    "core",
+    "stream",
 ] }
-libsql = { version = "0.9.11" }
 md-5 = "0.10.6"
 pin-utils = "0.1.0"
 walkdir = "2.5.0"
