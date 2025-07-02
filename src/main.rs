@@ -5,8 +5,13 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
 use console::style;
-use std::path::PathBuf;
-use tokio_util::sync::CancellationToken;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 fn build_cli() -> Command {
     command!()
@@ -69,6 +74,13 @@ fn print_completions<G: Generator>(generator: G, cmd: &mut Command) {
 }
 
 fn main() -> Result<()> {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })?;
+
     let args = build_cli().get_matches();
 
     if let Some(generator) = args.get_one::<Shell>("shell").copied() {
@@ -78,57 +90,36 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(*args.get_one::<usize>("threads").unwrap())
-        .enable_all()
-        .build()?;
-    runtime.block_on(async move {
-        let conn = if let Some(path) = args.get_one::<PathBuf>("db") {
-            db::Database::new(path).await?
-        } else {
-            db::open_default_db().await?
-        };
+    let conn = if let Some(path) = args.get_one::<PathBuf>("db") {
+        smol::block_on(async { db::Database::new(path).await })?
+    } else {
+        smol::block_on(async { db::open_default_db().await })?
+    };
 
-        let root_canceltoken = CancellationToken::new();
+    let path = args.get_one::<PathBuf>("path");
 
-        let canceltoken = root_canceltoken.clone();
+    if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
+        let count = smol::block_on(async { conn.get_toencode_number().await })?;
+        println!("Files to reencode:\t{}", style(count).green());
+        return Ok(());
+    }
 
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            root_canceltoken.cancel();
-        });
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(*args.get_one::<usize>("threads").unwrap())
+        .build()
+        .unwrap();
 
-        let path = args.get_one::<PathBuf>("path");
+    if let Some(realpath) = path {
+        let hanlder = running.clone();
+        pool.install(|| files::index_files_recursively(realpath, &conn, hanlder))?;
+    }
 
-        if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-            let count = conn.get_toencode_number().await?;
-            println!("Files to reencode:\t{}", style(count).green());
-            return Ok(());
-        }
+    /*     if args.get_flag("clean") {
+        pool.install(|| files::clean_files(&conn))?;
+    }
 
-        if let Some(realpath) = path {
-            let newtoken = canceltoken.clone();
-            files::index_files_recursively(realpath, &conn, newtoken).await?;
-        }
-
-        if canceltoken.is_cancelled() {
-            return Ok(());
-        }
-
-        if args.get_flag("clean") {
-            files::clean_files(&conn).await?;
-        }
-
-        if canceltoken.is_cancelled() {
-            return Ok(());
-        }
-
-        if args.get_flag("doit") {
-            let newtoken = canceltoken.clone();
-            files::reencode_files(&conn, newtoken).await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
+    if args.get_flag("doit") {
+        files::reencode_files(&conn)?;
+    } */
+    Ok::<(), anyhow::Error>(())
 }

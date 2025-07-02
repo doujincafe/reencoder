@@ -3,14 +3,22 @@ use futures_util::StreamExt;
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pin_utils::pin_mut;
+use rayon::prelude::*;
+use smol::{
+    Executor,
+    fs::{File, metadata},
+};
 use std::{
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::UNIX_EPOCH,
 };
-use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::{db::Database, flac::handle_encode};
@@ -51,9 +59,8 @@ impl Error for FileError {}
 async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     match conn.check_file(&file).await {
         Ok(true) => {
-            let modtime = file
-                .as_ref()
-                .metadata()?
+            let modtime = metadata(file.as_ref())
+                .await?
                 .modified()?
                 .duration_since(UNIX_EPOCH)?
                 .as_secs();
@@ -76,61 +83,71 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
     Ok(())
 }
 
-pub async fn index_files_recursively(
+pub fn index_files_recursively(
     path: impl AsRef<Path>,
     conn: &Database,
-    canceltoken: CancellationToken,
+    running: Arc<AtomicBool>,
 ) -> Result<()> {
     if !path.as_ref().is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
     let abspath = path.as_ref().canonicalize()?;
 
-    let mut tasks: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
-    for entry in WalkDir::new(abspath) {
-        let path = entry?.into_path();
-        if !path.is_file() {
-            continue;
-        }
+    let (tx, rx) = mpsc::channel();
+    let ex = Executor::new();
 
-        if path.extension().is_some_and(|x| x == "flac") {
-            let newconn = conn.clone();
-            let newtoken = canceltoken.clone();
-            #[cfg(not(test))]
-            let newbar = bar.clone();
-
-            tasks.spawn(async move {
-                tokio::select! {
-                    _ = newtoken.cancelled() => Ok(()),
-                    res = async {
-                        handle_file(path, newconn).await?;
-                        #[cfg(not(test))]
-                        newbar.inc(1);
-                        Ok(())
-                    } => res
+    WalkDir::new(abspath)
+        .into_iter()
+        .par_bridge()
+        .for_each(|entry| {
+            if !running.load(Ordering::SeqCst) {
+                return;
+            } else {
+                let path = entry.unwrap().into_path();
+                if !path.is_file() {
+                    return;
                 }
-            });
+                if path.extension().is_some_and(|x| x == "flac") {
+                    let newconn = conn.clone();
+                    let newrunning = running.clone();
+                    let newtx = tx.clone();
+                    #[cfg(not(test))]
+                    let newbar = bar.clone();
 
-            #[cfg(not(test))]
-            bar.inc_length(1);
-        }
+                    ex.spawn(async move {
+                        if !newrunning.load(Ordering::SeqCst) {
+                            match handle_file(&path, newconn).await {
+                                Err(error) => newtx.send(FileError::new(path, error)),
+                                Ok(_) => {
+                                    #[cfg(not(test))]
+                                    newbar.inc(1);
+                                    Ok(())
+                                }
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .detach();
+
+                    #[cfg(not(test))]
+                    bar.inc_length(1);
+                }
+            }
+        });
+
+    while let Ok(message) = rx.recv() {
+        eprintln!("{}", message);
     }
 
-    while let Some(task) = tasks.join_next().await {
-        match task {
-            Ok(Err(error)) => eprintln!("{error}"),
-            Err(error) => eprintln!("Error encountered:\t{}", error),
-            _ => {}
-        }
-    }
     #[cfg(not(test))]
     {
-        if canceltoken.is_cancelled() {
+        if !running.load(Ordering::SeqCst) {
             bar.abandon_with_message("Indexing aborted");
         } else {
             bar.finish_with_message("Finished indexing");
@@ -139,11 +156,9 @@ pub async fn index_files_recursively(
     Ok(())
 }
 
-pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> Result<()> {
+/* pub fn reencode_files(conn: &Database) -> Result<()> {
     let stream = conn.get_toencode_stream().await?;
     pin_mut!(stream);
-
-    let mut tasks = JoinSet::new();
 
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
@@ -186,27 +201,12 @@ pub async fn reencode_files(conn: &Database, canceltoken: CancellationToken) -> 
         }
     }
 
-    while let Some(task) = tasks.join_next().await {
-        match task {
-            Ok(Err(error)) => eprintln!("Error encountered:\t{error}"),
-            Err(error) => eprintln!("Error encountered:\t{error}"),
-            _ => {}
-        }
-    }
-
-    #[cfg(not(test))]
-    {
-        if canceltoken.is_cancelled() {
-            bar.abandon_with_message("Reencoding aborted");
-        } else {
-            bar.finish_with_message("Finished encoding");
-        }
-    }
-
     Ok(())
 }
 
-pub async fn clean_files(conn: &Database) -> Result<()> {
+pub fn clean_files(conn: &Database) -> Result<()> {
+    let ex = Executor::new();
+
     let mut tasks: JoinSet<std::result::Result<(), anyhow::Error>> = JoinSet::new();
 
     let query_res = conn.init_clean_files().await?;
@@ -237,42 +237,41 @@ pub async fn clean_files(conn: &Database) -> Result<()> {
     conn.vaccum().await?;
 
     Ok(())
-}
+} */
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use macro_rules_attribute::apply;
+    use smol_macros::{Executor, test};
 
-    #[tokio::test]
-    async fn test_index_lots_of_files() {
-        let conn = Database::new("temp3.db").await.unwrap();
-        let token = CancellationToken::new();
-        index_files_recursively(Path::new("./testfiles"), &conn, token)
-            .await
+    #[apply(test!)]
+    async fn test_index_lots_of_files(ex: &Executor<'_>) {
+        ex.spawn(async {
+            let running = Arc::new(AtomicBool::new(true));
+            let r = running.clone();
+
+            ctrlc::set_handler(move || {
+                r.store(false, Ordering::SeqCst);
+            })
             .unwrap();
-
-        std::fs::remove_file("temp3.db").unwrap();
+            let conn = Database::new("temp3.db").await.unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn, running).unwrap();
+            std::fs::remove_file("temp3.db").unwrap();
+        })
+        .await;
     }
 
-    #[test]
-    fn test_reencode_lots_of_files() {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .max_blocking_threads(4)
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
+    /* #[apply(test!)]
+    async fn test_reencode_lots_of_files(ex: &Executor<'_>) {
+        ex.spawn(async {
             let conn = Database::new("temp4.db").await.unwrap();
-            let token = CancellationToken::new();
-            index_files_recursively(Path::new("./testfiles"), &conn, token)
-                .await
-                .unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn).unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
-            let token = CancellationToken::new();
-            reencode_files(&conn, token).await.unwrap();
+            reencode_files(&conn).unwrap();
             println!("\n{}", conn.get_toencode_number().await.unwrap());
-        });
-
-        std::fs::remove_file("temp4.db").unwrap();
-    }
+            std::fs::remove_file("temp4.db").unwrap();
+        })
+        .await;
+    } */
 }

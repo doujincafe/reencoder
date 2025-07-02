@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
-use futures_util::Stream;
 use libsql::{Builder, Connection, params};
+use smol::stream::Stream;
 use std::{
     path::Path,
     time::{Duration, UNIX_EPOCH},
@@ -151,84 +151,90 @@ pub async fn open_default_db() -> Result<Database> {
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+    use macro_rules_attribute::apply;
+    use smol_macros::{Executor, test};
 
     use super::*;
 
-    #[tokio::test]
-    async fn check_localfiles() {
-        let dbname = String::from("temp1.db");
-        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-        let conn = Database::new(&dbname).await.unwrap();
-        for file in filenames {
-            let _ = conn.insert_file(&file.to_string()).await;
-        }
-        let returned = conn
-            .0
-            .query(TOENCODE_QUERY, ())
-            .await
-            .unwrap()
-            .into_stream();
-        pin_utils::pin_mut!(returned);
+    #[apply(test!)]
+    async fn check_localfiles(ex: &Executor<'_>) {
+        ex.spawn(async {
+            let dbname = String::from("temp1.db");
+            let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+            let mut counter = 0;
+            let conn = Database::new(&dbname).await.unwrap();
+            for file in filenames {
+                let _ = conn.insert_file(&file.to_string()).await;
+            }
+            let returned = conn
+                .0
+                .query(TOENCODE_QUERY, ())
+                .await
+                .unwrap()
+                .into_stream();
+            pin_utils::pin_mut!(returned);
 
-        let mut counter = 0;
-
-        while let Some(Ok(_)) = returned.next().await {
-            counter += 1
-        }
-
-        std::fs::remove_file(dbname).unwrap();
-        assert!(counter == 0)
+            while let Some(Ok(_)) = returned.next().await {
+                counter += 1
+            }
+            std::fs::remove_file(dbname).unwrap();
+            assert!(counter == 0)
+        })
+        .await;
     }
 
-    #[tokio::test]
-    async fn check_update() {
-        let dbname = String::from("temp2.db");
-        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-        let conn = Database::new(&dbname).await.unwrap();
-        for file in filenames {
+    #[apply(test!)]
+    async fn check_update(ex: &Executor<'_>) {
+        ex.spawn(async {
+            let dbname = String::from("temp2.db");
+            let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+            let conn = Database::new(&dbname).await.unwrap();
+            for file in filenames {
+                let _ = conn
+                    .insert_file(Path::new(file).canonicalize().unwrap())
+                    .await;
+            }
+
             let _ = conn
-                .insert_file(Path::new(file).canonicalize().unwrap())
+                .0
+                .execute(
+                    REPLACE_ITEM,
+                    params![
+                        Path::new("16bit.flac")
+                            .canonicalize()
+                            .unwrap()
+                            .to_str()
+                            .unwrap(),
+                        true,
+                        ""
+                    ],
+                )
                 .await;
-        }
 
-        let _ = conn
-            .0
-            .execute(
-                REPLACE_ITEM,
-                params![
-                    Path::new("16bit.flac")
-                        .canonicalize()
-                        .unwrap()
-                        .to_str()
-                        .unwrap(),
-                    true,
-                    ""
-                ],
+            conn.update_file(
+                Path::new("16bit.flac")
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
             )
-            .await;
-
-        conn.update_file(
-            Path::new("16bit.flac")
-                .canonicalize()
-                .unwrap()
-                .to_str()
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let returned = conn
-            .0
-            .query(TOENCODE_QUERY, ())
             .await
-            .unwrap()
-            .into_stream();
-        pin_utils::pin_mut!(returned);
-        let mut counter = 0;
-        while let Some(Ok(_)) = returned.next().await {
-            counter += 1
-        }
-        std::fs::remove_file(dbname).unwrap();
-        assert!(counter == 0)
+            .unwrap();
+
+            let returned = conn
+                .0
+                .query(TOENCODE_QUERY, ())
+                .await
+                .unwrap()
+                .into_stream();
+            pin_utils::pin_mut!(returned);
+            let mut counter = 0;
+            while let Some(Ok(_)) = returned.next().await {
+                counter += 1
+            }
+            std::fs::remove_file(dbname).unwrap();
+            assert!(counter == 0)
+        })
+        .await;
     }
 }
