@@ -165,8 +165,12 @@ pub fn reencode_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
         if handler.load(Ordering::SeqCst) {
             if let Err(error) = handle_encode(file) {
                 eprintln!("{}", FileError::new(file, error));
-            } else if let Err(error) = smol::block_on(async { conn.update_file(file).await }) {
-                eprintln!("{}", FileError::new(file, error));
+            } else {
+                if let Err(error) = smol::block_on(async { conn.update_file(file).await }) {
+                    eprintln!("{}", FileError::new(file, error));
+                }
+                #[cfg(not(test))]
+                bar.inc(1)
             }
         }
     });
