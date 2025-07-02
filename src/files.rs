@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rayon::prelude::*;
-use smol::{Executor, fs::metadata};
 use std::{
     error::Error,
     fmt::Display,
@@ -50,27 +51,24 @@ impl Display for FileError {
 
 impl Error for FileError {}
 
-async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
-    match conn.check_file(&file).await {
-        Ok(true) => {
-            let modtime = metadata(file.as_ref())
-                .await?
-                .modified()?
-                .duration_since(UNIX_EPOCH)?
-                .as_secs();
-            let db_time = conn.get_modtime(&file).await?;
-            if modtime != db_time {
-                if let Err(error) = conn.update_file(&file).await {
-                    return Err(FileError::new(file, error).into());
-                };
-            }
-            return Ok(());
+fn handle_file(file: impl AsRef<Path>, conn: &Database) -> Result<()> {
+    if conn.check_file(&file)? {
+        let modtime = file
+            .as_ref()
+            .metadata()?
+            .modified()?
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+        let db_modtime = conn.get_modtime(&file)?;
+        if modtime != db_modtime {
+            if let Err(error) = conn.update_file(&file) {
+                return Err(FileError::new(&file, error).into());
+            };
         }
-        Err(error) => return Err(FileError::new(file, error).into()),
-        _ => {}
+        return Ok(());
     }
 
-    if let Err(error) = conn.insert_file(&file).await {
+    if let Err(error) = conn.insert_file(&file) {
         return Err(FileError::new(file, error).into());
     }
 
@@ -79,7 +77,7 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
 
 pub fn index_files_recursively(
     path: impl AsRef<Path>,
-    conn: &Database,
+    pool: &Pool<SqliteConnectionManager>,
     handler: Arc<AtomicBool>,
 ) -> Result<()> {
     if !path.as_ref().is_dir() {
@@ -92,9 +90,7 @@ pub fn index_files_recursively(
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
-    let ex = Executor::new();
-
-    let mut tasks = Vec::new();
+    let mut paths = Vec::new();
 
     for entry in WalkDir::new(abspath) {
         if handler.load(Ordering::SeqCst) {
@@ -103,25 +99,7 @@ pub fn index_files_recursively(
                 continue;
             }
             if path.extension().is_some_and(|x| x == "flac") {
-                let newconn = conn.clone();
-                let newhandler = handler.clone();
-                #[cfg(not(test))]
-                let newbar = bar.clone();
-
-                tasks.push(ex.spawn(async move {
-                    if newhandler.load(Ordering::SeqCst) {
-                        match handle_file(&path, newconn).await {
-                            Err(error) => Err(FileError::new(path, error)),
-                            Ok(_) => {
-                                #[cfg(not(test))]
-                                newbar.inc(1);
-                                Ok(())
-                            }
-                        }
-                    } else {
-                        Ok(())
-                    }
-                }));
+                paths.push(path);
 
                 #[cfg(not(test))]
                 bar.inc_length(1);
@@ -131,10 +109,21 @@ pub fn index_files_recursively(
         }
     }
 
-    tasks.par_iter_mut().for_each(|task| {
+    paths.par_iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) {
-            if let Err(error) = smol::block_on(async { ex.run(task).await }) {
-                eprintln!("{error}")
+            let conn = match pool.get() {
+                Ok(conn) => Database::new(conn),
+                Err(error) => {
+                    eprintln!("{}", FileError::new(file, error.into()));
+                    return;
+                }
+            };
+
+            if let Err(error) = handle_file(file, &conn) {
+                eprintln!("{}", FileError::new(file, error))
+            } else {
+                #[cfg(not(test))]
+                bar.inc(1);
             }
         }
     });
@@ -150,23 +139,35 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-pub fn reencode_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
+pub fn reencode_files(
+    pool: &Pool<SqliteConnectionManager>,
+    handler: Arc<AtomicBool>,
+) -> Result<()> {
+    let conn = Database::new(pool.get()?);
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
-        Some(smol::block_on(async { conn.get_toencode_number().await })?.try_into()?),
+        Some(conn.get_toencode_number()?),
         ProgressDrawTarget::stdout_with_hz(60),
     )
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    let files = smol::block_on(async { conn.get_toencode_files().await })?;
+    let files = conn.get_toencode_files()?;
+    drop(conn);
 
     files.par_iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) {
+            let conn = match pool.get() {
+                Ok(conn) => Database::new(conn),
+                Err(error) => {
+                    eprintln!("{}", FileError::new(file, error.into()));
+                    return;
+                }
+            };
             if let Err(error) = handle_encode(file) {
                 eprintln!("{}", FileError::new(file, error));
             } else {
-                if let Err(error) = smol::block_on(async { conn.update_file(file).await }) {
+                if let Err(error) = conn.update_file(file) {
                     eprintln!("{}", FileError::new(file, error));
                 }
                 #[cfg(not(test))]
@@ -186,8 +187,10 @@ pub fn reencode_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
-pub fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
-    let files = smol::block_on(async { conn.init_clean_files().await })?;
+pub fn clean_files(pool: &Pool<SqliteConnectionManager>, handler: Arc<AtomicBool>) -> Result<()> {
+    let conn = Database::new(pool.get()?);
+    let files = conn.init_clean_files()?;
+    drop(conn);
 
     #[cfg(not(test))]
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
@@ -195,7 +198,14 @@ pub fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
 
     files.par_iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) && !file.exists() {
-            if let Err(error) = smol::block_on(async { conn.remove_file(file).await }) {
+            let conn = match pool.get() {
+                Ok(conn) => Database::new(conn),
+                Err(error) => {
+                    eprintln!("{}", FileError::new(file, error.into()));
+                    return;
+                }
+            };
+            if let Err(error) = conn.remove_file(file) {
                 eprintln!("{}", FileError::new(file, error))
             };
             #[cfg(not(test))]
@@ -205,7 +215,8 @@ pub fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     spinner.finish();
 
-    smol::block_on(async { conn.vaccum().await })?;
+    let conn = Database::new(pool.get()?);
+    conn.vaccum()?;
 
     Ok(())
 }
@@ -213,32 +224,28 @@ pub fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use macro_rules_attribute::apply;
-    use smol_macros::{Executor, test};
+    use crate::db::*;
 
-    #[apply(test!)]
-    async fn test_index_lots_of_files(ex: &Executor<'_>) {
-        ex.spawn(async {
-            let handler = Arc::new(AtomicBool::new(true));
-            let conn = Database::new("temp3.db").await.unwrap();
-            index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
-            std::fs::remove_file("temp3.db").unwrap();
-        })
-        .await;
+    #[test]
+    fn test_index_lots_of_files() {
+        let handler = Arc::new(AtomicBool::new(true));
+        let pool = open_db(Some("temp3.db")).unwrap();
+        index_files_recursively(Path::new("./testfiles"), &pool, handler).unwrap();
+        std::fs::remove_file("temp3.db").unwrap();
     }
 
-    #[apply(test!)]
-    async fn test_reencode_lots_of_files(ex: &Executor<'_>) {
-        ex.spawn(async {
-            let handler = Arc::new(AtomicBool::new(true));
-            let conn = Database::new("temp4.db").await.unwrap();
-            let temp = handler.clone();
-            index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
-            println!("\n{}", conn.get_toencode_number().await.unwrap());
-            reencode_files(&conn, handler).unwrap();
-            println!("\n{}", conn.get_toencode_number().await.unwrap());
-            std::fs::remove_file("temp4.db").unwrap();
-        })
-        .await;
+    #[test]
+    fn test_reencode_lots_of_files() {
+        let handler = Arc::new(AtomicBool::new(true));
+        let pool = open_db(Some("temp4.db")).unwrap();
+        let temp = handler.clone();
+        index_files_recursively(Path::new("./testfiles"), &pool, temp).unwrap();
+        let conn = Database::new(pool.get().unwrap());
+        println!("\n{}", conn.get_toencode_number().unwrap());
+        drop(conn);
+        reencode_files(&pool, handler).unwrap();
+        let conn = Database::new(pool.get().unwrap());
+        println!("\n{}", conn.get_toencode_number().unwrap());
+        std::fs::remove_file("temp4.db").unwrap();
     }
 }

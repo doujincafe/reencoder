@@ -1,6 +1,6 @@
 [package]
 name = "flac-reencoder"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 repository = "https://github.com/justjakka/reencoder/"
 license = "BSD-3-Clause"
@@ -14,22 +14,30 @@ anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["cargo", "help", "std"] }
 clap_complete = "4.5.54"
 directories = "6.0.0"
-flac-bound = { version = "0.5.0", features = [
-    "libflac-noogg",
-], default-features = false }
+flac-bound = { version = "0.5.0", default-features = false }
 i24 = { version = "2.1.0", features = ["std"] }
-indicatif = { version = "0.17.11", features = ["improved_unicode", "futures"] }
+indicatif = { version = "0.17.11", features = ["improved_unicode"] }
 md-5 = "0.10.6"
-pin-utils = "0.1.0"
 walkdir = "2.5.0"
 console = { version = "0.15.11", features = ["windows-console-colors"] }
 claxon = { git = "https://github.com/justjakka/claxon.git" }
 metaflac = "0.2.8"
 rayon = "1.10.0"
-smol = "2.0.2"
-futures-util = "0.3.31"
-smol-macros = "0.1.1"
-macro_rules_attribute = "0.2.2"
+rusqlite = { version = "0.36.0", default-features = false, features = [
+    "modern_sqlite",
+] }
+r2d2_sqlite = "0.30.0"
+r2d2 = "0.8.10"
 ctrlc = "3.4.7"
-easy-parallel = "3.3.1"
-libsql = { version = "0.9.11", default-features = false, features = ["core"] }
+
+[features]
+bundled = ["rusqlite/bundled", "flac-bound/libflac-noogg"]
+linked = ["flac-bound/libflac-nobuild"]
+
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.36.0", default-features = false, features = [
+    "bundled-windows",
+] }
+flac-bound = { version = "0.5.0", default-features = false, features = [
+    "libflac-noogg",
+] }

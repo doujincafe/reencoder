@@ -1,9 +1,11 @@
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
-use libsql::{Builder, Connection, params};
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::params;
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 
 use crate::flac::{CURRENT_VENDOR, get_vendor};
@@ -14,27 +16,39 @@ const REPLACE_ITEM: &str = "REPLACE INTO flacs (path, toencode, modtime) VALUES 
 const TOENCODE_QUERY: &str = "SELECT path FROM flacs WHERE toencode";
 const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
-const FETCH_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
 const REMOVE_FILE: &str = "DELETE FROM flacs WHERE path = ?1";
 const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
+const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
-#[derive(Debug, Clone)]
-pub struct Database(Connection);
+pub fn open_db(path: Option<impl AsRef<Path>>) -> Result<Pool<SqliteConnectionManager>> {
+    if let Some(file) = path {
+        let manager = SqliteConnectionManager::file(file);
+        let pool = Pool::builder().build(manager)?;
+        let conn = pool.get()?;
+        conn.execute(TABLE_CREATE, ())?;
+        Ok(pool)
+    } else if let Some(base_dir) = BaseDirs::new() {
+        let file = Path::new(base_dir.data_dir()).join("reencoder.db");
+        let manager = SqliteConnectionManager::file(file);
+        let pool = Pool::builder().build(manager)?;
+        let conn = pool.get()?;
+        conn.execute(TABLE_CREATE, ())?;
+        Ok(pool)
+    } else {
+        Err(anyhow!("Failed to locate data directory"))
+    }
+}
+
+pub struct Database(pub PooledConnection<SqliteConnectionManager>);
 
 impl Database {
-    pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Builder::new_local(path.as_ref().to_str().unwrap())
-            .build()
-            .await?
-            .connect()?;
-        conn.execute(TABLE_CREATE, ()).await?;
-
-        Ok(Database(conn))
+    pub fn new(conn: PooledConnection<SqliteConnectionManager>) -> Self {
+        Database(conn)
     }
 
-    pub async fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+    pub fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
         let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
 
         let modtime = filename
@@ -44,17 +58,15 @@ impl Database {
             .duration_since(UNIX_EPOCH)?
             .as_secs();
 
-        self.0
-            .execute(
-                ADD_NEW_ITEM,
-                params![filename.as_ref().to_str().unwrap(), toencode, modtime],
-            )
-            .await?;
+        self.0.execute(
+            ADD_NEW_ITEM,
+            params![filename.as_ref().to_str().unwrap(), toencode, modtime],
+        )?;
 
         Ok(())
     }
 
-    pub async fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+    pub fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
         let modtime = filename
             .as_ref()
             .metadata()?
@@ -62,176 +74,146 @@ impl Database {
             .duration_since(UNIX_EPOCH)?
             .as_secs();
 
-        self.0
-            .execute(
-                REPLACE_ITEM,
-                params![filename.as_ref().to_str().unwrap(), false, modtime],
-            )
-            .await?;
+        self.0.execute(
+            REPLACE_ITEM,
+            params![filename.as_ref().to_str().unwrap(), false, modtime],
+        )?;
 
         Ok(())
     }
 
-    pub async fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
-        if let Some(row) = self
-            .0
-            .query(CHECK_FILE, params!(filename.as_ref().to_str().unwrap()))
-            .await?
-            .next()
-            .await?
-        {
-            Ok(matches!(row.get_value(0)?, libsql::Value::Integer(1)))
+    pub fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
+        if self.0.query_one(
+            CHECK_FILE,
+            params!(filename.as_ref().to_str().unwrap()),
+            |row| {
+                let num: bool = row.get(0)?;
+                Ok(num)
+            },
+        )? {
+            Ok(true)
         } else {
-            Err(anyhow!("database error"))
+            Ok(false)
         }
     }
 
-    pub async fn get_modtime(&self, filename: impl AsRef<Path>) -> Result<u64> {
-        if let Some(row) = self
-            .0
-            .query(FETCH_MODTIME, params!(filename.as_ref().to_str().unwrap()))
-            .await?
-            .next()
-            .await?
-        {
-            if let Some(sec) = row.get_value(0)?.as_integer() {
-                Ok(Duration::from_secs(*sec as u64).as_secs())
-            } else {
-                Ok(Duration::from_secs(0).as_secs())
-            }
-        } else {
-            Err(anyhow!("database error"))
-        }
-    }
-
-    pub async fn init_clean_files(&self) -> Result<Vec<PathBuf>, libsql::Error> {
-        self.0.execute(DEDUPE_DB, ()).await?;
-        let mut rows = self.0.query(FETCH_FILES, ()).await?;
+    pub fn init_clean_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error> {
+        self.0.execute(DEDUPE_DB, ())?;
+        let mut stmt = self.0.prepare(FETCH_FILES)?;
+        let mut rows = stmt.query(())?;
         let mut files = Vec::new();
-        while let Ok(Some(row)) = rows.next().await {
-            files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
+        while let Ok(Some(row)) = rows.next() {
+            let path: String = row.get(0)?;
+            files.push(PathBuf::from(path));
         }
         Ok(files)
     }
 
-    pub async fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+    pub fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
         self.0
-            .execute(REMOVE_FILE, params!(filename.as_ref().to_str().unwrap()))
-            .await?;
+            .execute(REMOVE_FILE, params!(filename.as_ref().to_str().unwrap()))?;
         Ok(())
     }
 
-    pub async fn get_toencode_files(&self) -> Result<Vec<PathBuf>, libsql::Error> {
-        let mut rows = self.0.query(TOENCODE_QUERY, ()).await?;
-        let mut files = Vec::new();
-        while let Ok(Some(row)) = rows.next().await {
-            files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
+    pub fn get_toencode_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error> {
+        let mut stmt = self.0.prepare(TOENCODE_QUERY)?;
+        let mut rows = stmt.query(())?;
+        let mut files: Vec<PathBuf> = Vec::new();
+        while let Ok(Some(row)) = rows.next() {
+            let path: String = row.get(0)?;
+            files.push(PathBuf::from(path));
         }
         Ok(files)
     }
 
-    pub async fn get_toencode_number(&self) -> Result<i64> {
-        Ok(*self
-            .0
-            .query(TOENCODE_NUMBER, ())
-            .await?
-            .next()
-            .await?
-            .unwrap()
-            .get_value(0)?
-            .as_integer()
-            .unwrap())
+    pub fn get_toencode_number(&self) -> Result<u64, rusqlite::Error> {
+        self.0.query_one(TOENCODE_NUMBER, (), |row| {
+            let num: u64 = row.get(0)?;
+            Ok(num)
+        })
     }
 
-    pub async fn vaccum(&self) -> Result<()> {
-        self.0.execute("VACUUM", ()).await?;
+    pub fn get_modtime(&self, file: impl AsRef<Path>) -> Result<u64> {
+        Ok(self.0.query_one(
+            GET_MODTIME,
+            params![file.as_ref().to_str().unwrap()],
+            |row| {
+                let modtime: u64 = row.get(0)?;
+                Ok(modtime)
+            },
+        )?)
+    }
+
+    pub fn vaccum(&self) -> Result<()> {
+        self.0.execute("VACUUM", ())?;
         Ok(())
-    }
-}
-
-pub async fn open_default_db() -> Result<Database> {
-    if let Some(base_dir) = BaseDirs::new() {
-        let db_name = Path::new(base_dir.data_dir()).join("reencoder.db");
-        Ok(Database::new(db_name).await?)
-    } else {
-        Err(anyhow!("Failed to locate data directory"))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use macro_rules_attribute::apply;
-    use smol_macros::{Executor, test};
 
     use super::*;
 
-    #[apply(test!)]
-    async fn check_localfiles(ex: &Executor<'_>) {
-        ex.spawn(async {
-            let dbname = String::from("temp1.db");
-            let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-            let mut counter = 0;
-            let conn = Database::new(&dbname).await.unwrap();
-            for file in filenames {
-                let _ = conn.insert_file(&file.to_string()).await;
-            }
-            let mut returned = conn.0.query(TOENCODE_QUERY, ()).await.unwrap();
+    #[test]
+    fn check_localfiles() {
+        let dbname = String::from("temp1.db");
+        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+        let mut counter = 0;
+        let pool = open_db(Some(&dbname)).unwrap();
+        let conn = Database::new(pool.get().unwrap());
+        for file in filenames {
+            let _ = conn.insert_file(&file.to_string());
+        }
+        let mut stmt = conn.0.prepare(TOENCODE_QUERY).unwrap();
+        let mut returned = stmt.query(()).unwrap();
 
-            while let Ok(Some(_)) = returned.next().await {
-                counter += 1
-            }
-            std::fs::remove_file(dbname).unwrap();
-            assert!(counter == 0)
-        })
-        .await;
+        while let Ok(Some(_)) = returned.next() {
+            counter += 1
+        }
+        std::fs::remove_file(dbname).unwrap();
+        assert!(counter == 0)
     }
 
-    #[apply(test!)]
-    async fn check_update(ex: &Executor<'_>) {
-        ex.spawn(async {
-            let dbname = String::from("temp2.db");
-            let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
-            let conn = Database::new(&dbname).await.unwrap();
-            for file in filenames {
-                let _ = conn
-                    .insert_file(Path::new(file).canonicalize().unwrap())
-                    .await;
-            }
+    #[test]
+    fn check_update() {
+        let dbname = String::from("temp2.db");
+        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+        let pool = open_db(Some(&dbname)).unwrap();
+        let conn = Database::new(pool.get().unwrap());
+        for file in filenames {
+            let _ = conn.insert_file(Path::new(file).canonicalize().unwrap());
+        }
 
-            let _ = conn
-                .0
-                .execute(
-                    REPLACE_ITEM,
-                    params![
-                        Path::new("16bit.flac")
-                            .canonicalize()
-                            .unwrap()
-                            .to_str()
-                            .unwrap(),
-                        true,
-                        ""
-                    ],
-                )
-                .await;
-
-            conn.update_file(
+        let _ = conn.0.execute(
+            REPLACE_ITEM,
+            params![
                 Path::new("16bit.flac")
                     .canonicalize()
                     .unwrap()
                     .to_str()
                     .unwrap(),
-            )
-            .await
-            .unwrap();
+                true,
+                ""
+            ],
+        );
 
-            let mut returned = conn.0.query(TOENCODE_QUERY, ()).await.unwrap();
-            let mut counter = 0;
-            while let Ok(Some(_)) = returned.next().await {
-                counter += 1
-            }
-            std::fs::remove_file(dbname).unwrap();
-            assert!(counter == 0)
-        })
-        .await;
+        conn.update_file(
+            Path::new("16bit.flac")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+
+        let mut stmt = conn.0.prepare(TOENCODE_QUERY).unwrap();
+        let mut returned = stmt.query(()).unwrap();
+        let mut counter = 0;
+        while let Ok(Some(_)) = returned.next() {
+            counter += 1
+        }
+        std::fs::remove_file(dbname).unwrap();
+        assert!(counter == 0)
     }
 }

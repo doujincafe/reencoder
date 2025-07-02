@@ -13,6 +13,8 @@ use std::{
     },
 };
 
+use crate::db::Database;
+
 fn build_cli() -> Command {
     command!()
         .arg(
@@ -90,16 +92,13 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let conn = if let Some(path) = args.get_one::<PathBuf>("db") {
-        smol::block_on(async { db::Database::new(path).await })?
-    } else {
-        smol::block_on(async { db::open_default_db().await })?
-    };
+    let dbpool = db::open_db(args.get_one::<PathBuf>("db"))?;
 
     let path = args.get_one::<PathBuf>("path");
 
     if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-        let count = smol::block_on(async { conn.get_toencode_number().await })?;
+        let conn = Database::new(dbpool.get()?);
+        let count = conn.get_toencode_number()?;
         println!("Files to reencode:\t{}", style(count).green());
         return Ok(());
     }
@@ -110,17 +109,17 @@ fn main() -> Result<()> {
 
     if let Some(realpath) = path {
         let hanlder = running.clone();
-        pool.install(|| files::index_files_recursively(realpath, &conn, hanlder))?;
+        pool.install(|| files::index_files_recursively(realpath, &dbpool, hanlder))?;
     }
 
     if args.get_flag("clean") {
         let handler = running.clone();
-        pool.install(|| files::clean_files(&conn, handler))?;
+        pool.install(|| files::clean_files(&dbpool, handler))?;
     }
 
     if args.get_flag("doit") {
         let hanlder = running.clone();
-        pool.install(|| files::reencode_files(&conn, hanlder))?;
+        pool.install(|| files::reencode_files(&dbpool, hanlder))?;
     }
     Ok::<(), anyhow::Error>(())
 }
