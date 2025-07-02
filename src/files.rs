@@ -61,17 +61,17 @@ async fn handle_file(file: impl AsRef<Path>, conn: Database) -> Result<()> {
             let db_time = conn.get_modtime(&file).await?;
             if modtime != db_time {
                 if let Err(error) = conn.update_file(&file).await {
-                    return Err(anyhow!(FileError::new(file, error)));
+                    return Err(FileError::new(file, error).into());
                 };
             }
             return Ok(());
         }
-        Err(error) => return Err(anyhow!(FileError::new(file, error))),
+        Err(error) => return Err(FileError::new(file, error).into()),
         _ => {}
     }
 
     if let Err(error) = conn.insert_file(&file).await {
-        return Err(anyhow!(FileError::new(file, error)));
+        return Err(FileError::new(file, error).into());
     }
 
     Ok(())

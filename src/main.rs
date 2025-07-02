@@ -74,13 +74,6 @@ fn print_completions<G: Generator>(generator: G, cmd: &mut Command) {
 }
 
 fn main() -> Result<()> {
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-    })?;
-
     let args = build_cli().get_matches();
 
     if let Some(generator) = args.get_one::<Shell>("shell").copied() {
@@ -89,6 +82,13 @@ fn main() -> Result<()> {
         print_completions(generator, &mut cmd);
         return Ok(());
     }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })?;
 
     let conn = if let Some(path) = args.get_one::<PathBuf>("db") {
         smol::block_on(async { db::Database::new(path).await })?
