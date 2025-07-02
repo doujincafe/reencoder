@@ -134,39 +134,71 @@ pub fn index_files_recursively(
                 #[cfg(not(test))]
                 bar.inc_length(1);
             }
+        } else {
+            break;
         }
     }
 
     tasks.par_iter_mut().for_each(|task| {
-        if let Err(error) = smol::block_on(async { ex.run(task).await }) {
-            eprintln!("{error}")
+        if running.load(Ordering::SeqCst) {
+            if let Err(error) = smol::block_on(async { ex.run(task).await }) {
+                eprintln!("{error}")
+            }
         }
     });
 
     #[cfg(not(test))]
     {
-        if !running.load(Ordering::SeqCst) {
-            bar.abandon_with_message("Indexing aborted");
-        } else {
+        if running.load(Ordering::SeqCst) {
             bar.finish_with_message("Finished indexing");
+        } else {
+            bar.abandon_with_message("Indexing aborted");
         }
     }
     Ok(())
 }
 
-/* pub fn reencode_files(conn: &Database) -> Result<()> {
-    let stream = conn.get_toencode_stream().await?;
-    pin_mut!(stream);
+async fn get_reencode_vec(conn: &Database) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut rows = conn.get_toencode_files().await?;
+    while let Ok(Some(row)) = rows.next().await {
+        files.push(PathBuf::from(row.get_value(0)?.as_text().unwrap()))
+    }
+    Ok(files)
+}
 
+pub fn reencode_files(conn: &Database, running: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
-        Some(conn.get_toencode_number().await?),
+        Some(smol::block_on(async { conn.get_toencode_number().await })?.try_into()?),
         ProgressDrawTarget::stdout_with_hz(60),
     )
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    while let Some(Ok(row)) = stream.next().await {
+    let files = smol::block_on(async { get_reencode_vec(conn).await })?;
+
+    files.par_iter().for_each(|file| {
+        if running.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_secs(3));
+            #[cfg(not(test))]
+            bar.inc(1);
+        } else {
+            eprintln!("{}", FileError::new(file, anyhow!("cancelled")))
+        }
+    });
+
+    #[cfg(not(test))]
+    {
+        if running.load(Ordering::SeqCst) {
+            bar.finish_with_message("Finished reencoding");
+        } else {
+            bar.abandon_with_message("Reencoding aborted");
+        }
+    }
+    Ok(())
+
+    /* while let Some(Ok(row)) = stream.next().await {
         let filename = Path::new(row.get_str(0)?).canonicalize()?;
         if filename.exists() {
             let newconn = conn.clone();
@@ -197,12 +229,10 @@ pub fn index_files_recursively(
                 }
             });
         }
-    }
-
-    Ok(())
+    } */
 }
 
-pub fn clean_files(conn: &Database) -> Result<()> {
+/* pub fn clean_files(conn: &Database) -> Result<()> {
     let ex = Executor::new();
 
     let mut tasks: JoinSet<std::result::Result<(), anyhow::Error>> = JoinSet::new();

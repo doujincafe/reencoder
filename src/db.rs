@@ -1,11 +1,10 @@
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
-use libsql::{Builder, Connection, params};
-use smol::stream::Stream;
 use std::{
     path::Path,
     time::{Duration, UNIX_EPOCH},
 };
+use turso::{Builder, Connection, Rows, params};
 
 use crate::flac::{CURRENT_VENDOR, get_vendor};
 
@@ -26,7 +25,10 @@ pub struct Database(Connection);
 
 impl Database {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Builder::new_local(path).build().await?.connect()?;
+        let conn = Builder::new_local(path.as_ref().to_str().unwrap())
+            .build()
+            .await?
+            .connect()?;
         conn.execute(TABLE_CREATE, ()).await?;
 
         Ok(Database(conn))
@@ -78,7 +80,7 @@ impl Database {
             .next()
             .await?
         {
-            Ok(matches!(row.get_value(0)?, libsql::Value::Integer(1)))
+            Ok(matches!(row.get_value(0)?, turso::Value::Integer(1)))
         } else {
             Err(anyhow!("database error"))
         }
@@ -102,11 +104,9 @@ impl Database {
         }
     }
 
-    pub async fn init_clean_files(
-        &self,
-    ) -> Result<impl Stream<Item = libsql::Result<libsql::Row>>> {
+    pub async fn init_clean_files(&self) -> Result<Rows, turso::Error> {
         self.0.execute(DEDUPE_DB, ()).await?;
-        Ok(self.0.query(FETCH_FILES, ()).await?.into_stream())
+        self.0.query(FETCH_FILES, ()).await
     }
 
     pub async fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
@@ -116,21 +116,21 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_toencode_stream(
-        &self,
-    ) -> Result<impl Stream<Item = libsql::Result<libsql::Row>>> {
-        Ok(self.0.query(TOENCODE_QUERY, ()).await?.into_stream())
+    pub async fn get_toencode_files(&self) -> Result<Rows, turso::Error> {
+        self.0.query(TOENCODE_QUERY, ()).await
     }
 
-    pub async fn get_toencode_number(&self) -> Result<u64> {
-        Ok(self
+    pub async fn get_toencode_number(&self) -> Result<i64> {
+        Ok(*self
             .0
             .query(TOENCODE_NUMBER, ())
             .await?
             .next()
             .await?
             .unwrap()
-            .get::<u64>(0)?)
+            .get_value(0)?
+            .as_integer()
+            .unwrap())
     }
 
     pub async fn vaccum(&self) -> Result<()> {
@@ -150,7 +150,6 @@ pub async fn open_default_db() -> Result<Database> {
 
 #[cfg(test)]
 mod tests {
-    use futures_util::StreamExt;
     use macro_rules_attribute::apply;
     use smol_macros::{Executor, test};
 
@@ -166,15 +165,9 @@ mod tests {
             for file in filenames {
                 let _ = conn.insert_file(&file.to_string()).await;
             }
-            let returned = conn
-                .0
-                .query(TOENCODE_QUERY, ())
-                .await
-                .unwrap()
-                .into_stream();
-            pin_utils::pin_mut!(returned);
+            let mut returned = conn.0.query(TOENCODE_QUERY, ()).await.unwrap();
 
-            while let Some(Ok(_)) = returned.next().await {
+            while let Ok(Some(_)) = returned.next().await {
                 counter += 1
             }
             std::fs::remove_file(dbname).unwrap();
@@ -221,15 +214,9 @@ mod tests {
             .await
             .unwrap();
 
-            let returned = conn
-                .0
-                .query(TOENCODE_QUERY, ())
-                .await
-                .unwrap()
-                .into_stream();
-            pin_utils::pin_mut!(returned);
+            let mut returned = conn.0.query(TOENCODE_QUERY, ()).await.unwrap();
             let mut counter = 0;
-            while let Some(Ok(_)) = returned.next().await {
+            while let Ok(Some(_)) = returned.next().await {
                 counter += 1
             }
             std::fs::remove_file(dbname).unwrap();

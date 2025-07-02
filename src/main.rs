@@ -114,12 +114,13 @@ fn main() -> Result<()> {
         pool.install(|| files::index_files_recursively(realpath, &conn, hanlder))?;
     }
 
-    /*     if args.get_flag("clean") {
+    /* if args.get_flag("clean") {
         pool.install(|| files::clean_files(&conn))?;
-    }
+    } */
 
     if args.get_flag("doit") {
-        files::reencode_files(&conn)?;
-    } */
+        let hanlder = running.clone();
+        pool.install(|| files::reencode_files(&conn, hanlder))?;
+    }
     Ok::<(), anyhow::Error>(())
 }
