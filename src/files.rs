@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use smol::{
     Executor,
     fs::{File, metadata},
+    stream,
 };
 use std::time;
 use std::{
@@ -99,8 +100,9 @@ pub fn index_files_recursively(
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
-    let (tx, rx) = mpsc::channel();
     let ex = Executor::new();
+
+    let mut tasks = Vec::new();
 
     for entry in WalkDir::new(abspath) {
         if running.load(Ordering::SeqCst) {
@@ -111,23 +113,13 @@ pub fn index_files_recursively(
             if path.extension().is_some_and(|x| x == "flac") {
                 let newconn = conn.clone();
                 let newrunning = running.clone();
-                let newtx = tx.clone();
                 #[cfg(not(test))]
                 let newbar = bar.clone();
 
-                ex.spawn(async move {
-                    std::thread::sleep(Duration::from_secs(2));
-                    println!("reached");
-                    let _ = newtx.send(FileError::new(path, anyhow!("error!")));
-                    #[cfg(not(test))]
-                    newbar.inc(1);
-                })
-                .detach();
-
-                /* ex.spawn(async move {
-                    if !newrunning.load(Ordering::SeqCst) {
+                tasks.push(ex.spawn(async move {
+                    if newrunning.load(Ordering::SeqCst) {
                         match handle_file(&path, newconn).await {
-                            Err(error) => newtx.send(FileError::new(path, error)),
+                            Err(error) => Err(FileError::new(path, error)),
                             Ok(_) => {
                                 #[cfg(not(test))]
                                 newbar.inc(1);
@@ -137,8 +129,7 @@ pub fn index_files_recursively(
                     } else {
                         Ok(())
                     }
-                })
-                .detach(); */
+                }));
 
                 #[cfg(not(test))]
                 bar.inc_length(1);
@@ -146,13 +137,11 @@ pub fn index_files_recursively(
         }
     }
 
-    drop(tx);
-
-    while !ex.is_empty() {
-        if let Ok(message) = rx.recv() {
-            eprintln!("{}", message);
+    tasks.par_iter_mut().for_each(|task| {
+        if let Err(error) = smol::block_on(async { ex.run(task).await }) {
+            eprintln!("{error}")
         }
-    }
+    });
 
     #[cfg(not(test))]
     {
