@@ -111,7 +111,7 @@ fn main() -> Result<()> {
 
     if let Some(realpath) = path {
         let hanlder = running.clone();
-        pool.install(|| files::index_files_recursively(realpath, &dbpool, hanlder))?;
+        files::index_files_recursively(realpath, &dbpool, hanlder)?;
     }
 
     if args.get_flag("clean") {

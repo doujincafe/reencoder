@@ -90,17 +90,13 @@ pub fn index_files_recursively(
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
 
-    let mut paths = Vec::new();
-
-    for entry in WalkDir::new(abspath) {
+    for entry in WalkDir::new(&abspath) {
         if handler.load(Ordering::SeqCst) {
             let path = entry.unwrap().into_path();
             if !path.is_file() {
                 continue;
             }
             if path.extension().is_some_and(|x| x == "flac") {
-                paths.push(path);
-
                 #[cfg(not(test))]
                 bar.inc_length(1);
             }
@@ -109,24 +105,25 @@ pub fn index_files_recursively(
         }
     }
 
-    paths.par_iter().for_each(|file| {
+    let conn = Database::new(pool.get()?);
+    for entry in WalkDir::new(abspath) {
         if handler.load(Ordering::SeqCst) {
-            let conn = match pool.get() {
-                Ok(conn) => Database::new(conn),
-                Err(error) => {
-                    eprintln!("{}", FileError::new(file, error.into()));
-                    return;
-                }
-            };
-
-            if let Err(error) = handle_file(file, &conn) {
-                eprintln!("{}", FileError::new(file, error))
-            } else {
-                #[cfg(not(test))]
-                bar.inc(1);
+            let path = entry.unwrap().into_path();
+            if !path.is_file() {
+                continue;
             }
+            if path.extension().is_some_and(|x| x == "flac") {
+                if let Err(error) = handle_file(&path, &conn) {
+                    eprintln!("{}", FileError::new(path, error));
+                } else {
+                    #[cfg(not(test))]
+                    bar.inc(1);
+                }
+            }
+        } else {
+            break;
         }
-    });
+    }
 
     #[cfg(not(test))]
     {
