@@ -106,8 +106,7 @@ fn main() -> Result<()> {
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(*args.get_one::<usize>("threads").unwrap())
-        .build()
-        .unwrap();
+        .build()?;
 
     if let Some(realpath) = path {
         let hanlder = running.clone();
