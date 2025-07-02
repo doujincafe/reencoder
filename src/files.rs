@@ -101,46 +101,45 @@ pub fn index_files_recursively(
     let (tx, rx) = mpsc::channel();
     let ex = Executor::new();
 
-    WalkDir::new(abspath)
-        .into_iter()
-        .par_bridge()
-        .for_each(|entry| {
-            if running.load(Ordering::SeqCst) {
-                let path = entry.unwrap().into_path();
-                if !path.is_file() {
-                    return;
-                }
-                if path.extension().is_some_and(|x| x == "flac") {
-                    let newconn = conn.clone();
-                    let newrunning = running.clone();
-                    let newtx = tx.clone();
-                    #[cfg(not(test))]
-                    let newbar = bar.clone();
-
-                    ex.spawn(async move {
-                        if !newrunning.load(Ordering::SeqCst) {
-                            match handle_file(&path, newconn).await {
-                                Err(error) => newtx.send(FileError::new(path, error)),
-                                Ok(_) => {
-                                    #[cfg(not(test))]
-                                    newbar.inc(1);
-                                    Ok(())
-                                }
-                            }
-                        } else {
-                            Ok(())
-                        }
-                    })
-                    .detach();
-
-                    #[cfg(not(test))]
-                    bar.inc_length(1);
-                }
+    for entry in WalkDir::new(abspath) {
+        if running.load(Ordering::SeqCst) {
+            let path = entry.unwrap().into_path();
+            if !path.is_file() {
+                continue;
             }
-        });
+            if path.extension().is_some_and(|x| x == "flac") {
+                let newconn = conn.clone();
+                let newrunning = running.clone();
+                let newtx = tx.clone();
+                #[cfg(not(test))]
+                let newbar = bar.clone();
 
-    while let Ok(message) = rx.recv() {
-        eprintln!("{}", message);
+                ex.spawn(async move {
+                    if !newrunning.load(Ordering::SeqCst) {
+                        match handle_file(&path, newconn).await {
+                            Err(error) => newtx.send(FileError::new(path, error)),
+                            Ok(_) => {
+                                #[cfg(not(test))]
+                                newbar.inc(1);
+                                Ok(())
+                            }
+                        }
+                    } else {
+                        Ok(())
+                    }
+                })
+                .detach();
+
+                #[cfg(not(test))]
+                bar.inc_length(1);
+            }
+        }
+    }
+
+    while !ex.is_empty() {
+        if let Ok(message) = rx.recv() {
+            eprintln!("{}", message);
+        }
     }
 
     #[cfg(not(test))]
