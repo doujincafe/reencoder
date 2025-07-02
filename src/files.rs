@@ -137,6 +137,7 @@ pub fn index_files_recursively(
     }
 
     while !ex.is_empty() {
+        println!("reached");
         if let Ok(message) = rx.recv() {
             eprintln!("{}", message);
         }
