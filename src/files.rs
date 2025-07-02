@@ -8,6 +8,7 @@ use smol::{
     Executor,
     fs::{File, metadata},
 };
+use std::time;
 use std::{
     error::Error,
     fmt::Display,
@@ -17,7 +18,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::UNIX_EPOCH,
+    time::{Duration, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -115,6 +116,15 @@ pub fn index_files_recursively(
                 let newbar = bar.clone();
 
                 ex.spawn(async move {
+                    std::thread::sleep(Duration::from_secs(2));
+                    println!("reached");
+                    let _ = newtx.send(FileError::new(path, anyhow!("error!")));
+                    #[cfg(not(test))]
+                    newbar.inc(1);
+                })
+                .detach();
+
+                /* ex.spawn(async move {
                     if !newrunning.load(Ordering::SeqCst) {
                         match handle_file(&path, newconn).await {
                             Err(error) => newtx.send(FileError::new(path, error)),
@@ -128,7 +138,7 @@ pub fn index_files_recursively(
                         Ok(())
                     }
                 })
-                .detach();
+                .detach(); */
 
                 #[cfg(not(test))]
                 bar.inc_length(1);
@@ -136,8 +146,9 @@ pub fn index_files_recursively(
         }
     }
 
+    drop(tx);
+
     while !ex.is_empty() {
-        println!("reached");
         if let Ok(message) = rx.recv() {
             eprintln!("{}", message);
         }
