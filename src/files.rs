@@ -199,7 +199,7 @@ pub fn clean_files(pool: &Pool<SqliteConnectionManager>, handler: Arc<AtomicBool
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(SPINNER_TEMPLATE)?);
 
-    files.par_iter().for_each(|file| {
+    files.iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) && !file.exists() {
             let conn = match pool.get() {
                 Ok(conn) => Database::new(conn),
