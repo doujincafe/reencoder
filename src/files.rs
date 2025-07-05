@@ -161,6 +161,12 @@ pub fn reencode_files(
                     return;
                 }
             };
+
+            if !file.exists() {
+                let _ = conn.remove_file(file);
+                return;
+            }
+
             if let Err(error) = handle_encode(file) {
                 eprintln!("{}", FileError::new(file, error));
             } else {
