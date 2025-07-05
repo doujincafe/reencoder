@@ -24,13 +24,13 @@ const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} 
 const SPINNER_TEMPLATE: &str = "Removed from db: {pos:.green}";
 
 #[derive(Debug)]
-pub struct FileError {
+struct FileError {
     file: PathBuf,
     error: anyhow::Error,
 }
 
 impl FileError {
-    pub fn new(file: impl AsRef<Path>, error: anyhow::Error) -> Self {
+    fn new(file: impl AsRef<Path>, error: anyhow::Error) -> Self {
         FileError {
             file: file.as_ref().to_path_buf(),
             error,
@@ -231,16 +231,38 @@ mod tests {
 
     #[test]
     fn test_index_lots_of_files() {
+        let dbname = "temp3.db";
         let handler = Arc::new(AtomicBool::new(true));
-        let pool = open_db(Some("temp3.db"), 10).unwrap();
+        let pool = open_db(Some(dbname), 10).unwrap();
         index_files_recursively(Path::new("./testfiles"), &pool, handler).unwrap();
-        std::fs::remove_file("temp3.db").unwrap();
+        std::fs::remove_file(dbname).unwrap();
+    }
+
+    #[test]
+    fn test_clean_files() {
+        let dbname = "temp4.db";
+        let handler = Arc::new(AtomicBool::new(true));
+        let pool = open_db(Some(dbname), 10).unwrap();
+        let conn = Database::new(pool.get().unwrap());
+        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac", "nonexisting.flac"];
+        std::fs::copy("32bit.flac", "nonexisting.flac").unwrap();
+        for file in filenames {
+            conn.insert_file(&file.to_string()).unwrap();
+        }
+
+        std::fs::remove_file("nonexisting.flac").unwrap();
+
+        clean_files(&pool, handler).unwrap();
+        let counter = conn.init_clean_files().unwrap().len();
+        std::fs::remove_file(dbname).unwrap();
+        assert!(counter == 3)
     }
 
     #[test]
     fn test_reencode_lots_of_files() {
+        let dbname = "temp5.db";
         let handler = Arc::new(AtomicBool::new(true));
-        let pool = open_db(Some("temp4.db"), 10).unwrap();
+        let pool = open_db(Some(dbname), 10).unwrap();
         let temp = handler.clone();
         index_files_recursively(Path::new("./testfiles"), &pool, temp).unwrap();
         let conn = Database::new(pool.get().unwrap());
@@ -249,6 +271,6 @@ mod tests {
         reencode_files(&pool, handler).unwrap();
         let conn = Database::new(pool.get().unwrap());
         println!("\n{}", conn.get_toencode_number().unwrap());
-        std::fs::remove_file("temp4.db").unwrap();
+        std::fs::remove_file(dbname).unwrap();
     }
 }

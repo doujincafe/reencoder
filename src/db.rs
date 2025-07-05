@@ -166,7 +166,7 @@ mod tests {
         let pool = open_db(Some(&dbname), 10).unwrap();
         let conn = Database::new(pool.get().unwrap());
         for file in filenames {
-            let _ = conn.insert_file(&file.to_string());
+            conn.insert_file(&file.to_string()).unwrap();
         }
         let mut stmt = conn.0.prepare(TOENCODE_QUERY).unwrap();
         let mut returned = stmt.query(()).unwrap();
@@ -185,21 +185,24 @@ mod tests {
         let pool = open_db(Some(&dbname), 10).unwrap();
         let conn = Database::new(pool.get().unwrap());
         for file in filenames {
-            let _ = conn.insert_file(Path::new(file).canonicalize().unwrap());
+            conn.insert_file(Path::new(file).canonicalize().unwrap())
+                .unwrap();
         }
 
-        let _ = conn.0.execute(
-            REPLACE_ITEM,
-            params![
-                Path::new("16bit.flac")
-                    .canonicalize()
-                    .unwrap()
-                    .to_str()
-                    .unwrap(),
-                true,
-                ""
-            ],
-        );
+        conn.0
+            .execute(
+                REPLACE_ITEM,
+                params![
+                    Path::new("16bit.flac")
+                        .canonicalize()
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    true,
+                    ""
+                ],
+            )
+            .unwrap();
 
         conn.update_file(
             Path::new("16bit.flac")
