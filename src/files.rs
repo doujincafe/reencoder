@@ -164,6 +164,8 @@ pub fn reencode_files(
 
             if !file.exists() {
                 let _ = conn.remove_file(file);
+                #[cfg(not(test))]
+                bar.dec_length(1);
                 return;
             }
 
