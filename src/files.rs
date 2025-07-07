@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use rayon::prelude::*;
 use rusqlite::Connection;
 use std::{
     error::Error,
@@ -133,7 +134,7 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize) -> Result<()> {
+pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
         Some(conn.get_toencode_number()?),
@@ -144,41 +145,25 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
 
     let files = conn.get_toencode_files()?;
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()?;
-
     let lock = Arc::new(Mutex::new(conn));
 
-    pool.scope(|scope| {
-        for file in files {
-            if handler.load(Ordering::SeqCst) {
-                scope.spawn(|_| {
-                    let newconn = if let Ok(conn) = lock.lock() {
-                        conn
-                    } else {
-                        eprintln!("Error setting up lock on file:\t{}", file.to_string_lossy());
-                        return;
-                    };
-                    if !file.exists() {
-                        let _ = newconn.remove_file(&file);
-                        #[cfg(not(test))]
-                        bar.dec_length(1);
-                        return;
-                    }
-
-                    if let Err(error) = handle_encode(&file) {
-                        eprintln!("{}", FileError::new(&file, error));
-                    } else {
-                        if let Err(error) = newconn.update_file(&file) {
-                            eprintln!("{}", FileError::new(file, error));
-                        }
-                        #[cfg(not(test))]
-                        bar.inc(1)
-                    }
-                });
+    files.par_iter().for_each(|file| {
+        if handler.load(Ordering::SeqCst) {
+            let conn = match lock.lock() {
+                Ok(conn) => conn,
+                Err(_) => {
+                    eprintln!("Lock poisoned on file:\t{}", file.to_string_lossy());
+                    return;
+                }
+            };
+            if let Err(error) = handle_encode(file) {
+                eprintln!("{}", FileError::new(file, error));
             } else {
-                break;
+                if let Err(error) = conn.update_file(file) {
+                    eprintln!("{}", FileError::new(file, error));
+                }
+                #[cfg(not(test))]
+                bar.inc(1)
             }
         }
     });
@@ -258,7 +243,7 @@ mod tests {
         let temp = handler.clone();
         index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
         println!("\n{}", conn.get_toencode_number().unwrap());
-        reencode_files(conn, handler, 2).unwrap();
+        reencode_files(conn, handler).unwrap();
         let conn = Connection::new(Some(&dbname)).unwrap();
         println!("\n{}", conn.get_toencode_number().unwrap());
         std::fs::remove_file(dbname).unwrap();
