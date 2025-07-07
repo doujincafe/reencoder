@@ -3,7 +3,13 @@ use claxon::{FlacReader, FlacReaderOptions};
 use flac_bound::FlacEncoder;
 use md5::{Digest, Md5};
 use metaflac::{Block, Tag};
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
@@ -35,7 +41,7 @@ fn write_tags(filename: impl AsRef<Path>, hash: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
+fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<bool> {
     let temp_name = filename.as_ref().with_extension("tmp");
     if temp_name.exists() {
         std::fs::remove_file(&temp_name)?;
@@ -55,7 +61,7 @@ fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
 
     let mut hasher = Md5::new();
 
-    let samples = decoder
+    for samples in decoder
         .samples()
         .map(|res| {
             let sample = res.unwrap();
@@ -73,11 +79,17 @@ fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
             }
             sample
         })
-        .collect::<Vec<i32>>();
-
-    encoder
-        .process_interleaved(&samples, samples.len() as u32 / streaminfo.channels)
-        .unwrap();
+        .collect::<Vec<i32>>()
+        .chunks(streaminfo.channels as usize)
+    {
+        if handler.load(Ordering::SeqCst) {
+            let _ =
+                encoder.process_interleaved(samples, samples.len() as u32 / streaminfo.channels);
+        } else {
+            let _ = std::fs::remove_file(temp_name);
+            return Ok(true);
+        }
+    }
 
     if let Err(enc) = encoder.finish() {
         return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
@@ -86,15 +98,16 @@ fn encode_file(filename: impl AsRef<Path>) -> Result<()> {
     let hash = hasher.finalize().to_vec();
     write_tags(&filename, hash)?;
     std::fs::rename(temp_name, filename)?;
-    Ok(())
+    Ok(false)
 }
 
-pub fn handle_encode(filename: impl AsRef<Path>) -> Result<()> {
-    if let Err(error) = encode_file(&filename) {
-        let _ = std::fs::remove_file(filename.as_ref().with_extension("tmp"));
-        Err(error)
-    } else {
-        Ok(())
+pub fn handle_encode(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<bool> {
+    match encode_file(&filename, handler) {
+        Err(error) => {
+            let _ = std::fs::remove_file(filename.as_ref().with_extension("tmp"));
+            Err(error)
+        }
+        Ok(res) => Ok(res),
     }
 }
 
@@ -120,10 +133,11 @@ mod tests {
 
     #[test]
     fn bit16() {
-        let name = "16bit.flac";
-        let tempname = "16bit.flac.temp";
+        let name = "./samples/16bit.flac";
+        let tempname = "./samples/16bit.flac.temp";
         std::fs::copy(name, tempname).unwrap();
-        encode_file(name).unwrap();
+        let handler = Arc::new(AtomicBool::new(true));
+        encode_file(name, handler).unwrap();
         let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
         let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
 
@@ -133,10 +147,11 @@ mod tests {
 
     #[test]
     fn bit24() {
-        let name = "24bit.flac";
-        let tempname = "24bit.flac.temp";
+        let name = "./samples/24bit.flac";
+        let tempname = "./samples/24bit.flac.temp";
         std::fs::copy(name, tempname).unwrap();
-        encode_file(name).unwrap();
+        let handler = Arc::new(AtomicBool::new(true));
+        encode_file(name, handler).unwrap();
         let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
         let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
 
@@ -146,10 +161,11 @@ mod tests {
 
     #[test]
     fn bit32() {
-        let name = "32bit.flac";
-        let tempname = "32bit.flac.temp";
+        let name = "./samples/32bit.flac";
+        let tempname = "./samples/32bit.flac.temp";
         std::fs::copy(name, tempname).unwrap();
-        encode_file(name).unwrap();
+        let handler = Arc::new(AtomicBool::new(true));
+        encode_file(name, handler).unwrap();
         let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
         let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
 

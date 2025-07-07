@@ -23,7 +23,7 @@
 target
 testfiles
 testfiles_orig
-*.flac
-*.wav
-*.tmp
-*.db
+./*.flac
+./*.wav
+./*.tmp
+./*.db

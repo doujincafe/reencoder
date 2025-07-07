@@ -149,21 +149,24 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>) -> Result<()> 
 
     files.par_iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) {
-            let conn = match lock.lock() {
-                Ok(conn) => conn,
-                Err(_) => {
-                    eprintln!("Lock poisoned on file:\t{}", file.to_string_lossy());
-                    return;
+            let newhandler = handler.clone();
+            match handle_encode(file, newhandler) {
+                Err(error) => eprintln!("{}", FileError::new(file, error)),
+                Ok(false) => {
+                    let conn = match lock.lock() {
+                        Ok(conn) => conn,
+                        Err(_) => {
+                            eprintln!("Lock poisoned on file:\t{}", file.to_string_lossy());
+                            return;
+                        }
+                    };
+                    if let Err(error) = conn.update_file(file) {
+                        eprintln!("{}", FileError::new(file, error));
+                    }
+                    #[cfg(not(test))]
+                    bar.inc(1)
                 }
-            };
-            if let Err(error) = handle_encode(file) {
-                eprintln!("{}", FileError::new(file, error));
-            } else {
-                if let Err(error) = conn.update_file(file) {
-                    eprintln!("{}", FileError::new(file, error));
-                }
-                #[cfg(not(test))]
-                bar.inc(1)
+                Ok(true) => {}
             }
         }
     });
