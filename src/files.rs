@@ -224,13 +224,18 @@ mod tests {
         let dbname = "temp4.db";
         let handler = Arc::new(AtomicBool::new(true));
         let conn = Connection::new(Some(&dbname)).unwrap();
-        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac", "nonexisting.flac"];
-        std::fs::copy("32bit.flac", "nonexisting.flac").unwrap();
+        let filenames = [
+            "./samples/16bit.flac",
+            "./samples/24bit.flac",
+            "./samples/32bit.flac",
+            "./samples/nonexisting.flac",
+        ];
+        std::fs::copy("./samples/32bit.flac", "./samples/nonexisting.flac").unwrap();
         for file in filenames {
             conn.insert_file(&file.to_string()).unwrap();
         }
 
-        std::fs::remove_file("nonexisting.flac").unwrap();
+        std::fs::remove_file("./samples/nonexisting.flac").unwrap();
 
         clean_files(&conn, handler).unwrap();
         let counter = conn.init_clean_files().unwrap().len();

@@ -158,7 +158,11 @@ mod tests {
     #[test]
     fn check_localfiles() {
         let dbname = String::from("temp1.db");
-        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+        let filenames = [
+            "./samples/16bit.flac",
+            "./samples/24bit.flac",
+            "./samples/32bit.flac",
+        ];
         let mut counter = 0;
         let conn = Connection::new(Some(&dbname)).unwrap();
         for file in filenames {
@@ -177,7 +181,11 @@ mod tests {
     #[test]
     fn check_update() {
         let dbname = String::from("temp2.db");
-        let filenames = ["16bit.flac", "24bit.flac", "32bit.flac"];
+        let filenames = [
+            "./samples/16bit.flac",
+            "./samples/24bit.flac",
+            "./samples/32bit.flac",
+        ];
         let conn = Connection::new(Some(&dbname)).unwrap();
         for file in filenames {
             conn.insert_file(Path::new(file).canonicalize().unwrap())
@@ -187,7 +195,7 @@ mod tests {
         conn.execute(
             REPLACE_ITEM,
             params![
-                Path::new("16bit.flac")
+                Path::new("./samples/16bit.flac")
                     .canonicalize()
                     .unwrap()
                     .to_str()
@@ -199,7 +207,7 @@ mod tests {
         .unwrap();
 
         conn.update_file(
-            Path::new("16bit.flac")
+            Path::new("./samples/16bit.flac")
                 .canonicalize()
                 .unwrap()
                 .to_str()
