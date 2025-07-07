@@ -60,16 +60,12 @@ fn handle_file(file: impl AsRef<Path>, conn: &Connection) -> Result<()> {
             .as_secs();
         let db_modtime = conn.get_modtime(&file)?;
         if modtime != db_modtime {
-            if let Err(error) = conn.update_file(&file) {
-                return Err(FileError::new(&file, error).into());
-            };
+            conn.update_file(&file)?;
         }
         return Ok(());
     }
 
-    if let Err(error) = conn.insert_file(&file) {
-        return Err(FileError::new(file, error).into());
-    }
+    conn.insert_file(&file)?;
 
     Ok(())
 }

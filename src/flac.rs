@@ -27,7 +27,7 @@ fn write_tags(filename: impl AsRef<Path>, hash: Vec<u8>) -> Result<()> {
         match block {
             Block::VorbisComment(comment) => {
                 for (key, val) in comment.comments.clone() {
-                    if key != "ENCODER" {
+                    if key.to_lowercase() != "encoder" || key.to_lowercase() != "encoded by" {
                         output.set_vorbis(key, val);
                     }
                 }
