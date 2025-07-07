@@ -91,7 +91,7 @@ pub fn index_files_recursively(
 
     for entry in WalkDir::new(&abspath) {
         if handler.load(Ordering::SeqCst) {
-            let path = entry.unwrap().into_path();
+            let path = entry?.into_path();
             if !path.is_file() {
                 continue;
             }
