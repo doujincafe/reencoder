@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
 use console::style;
+use rusqlite::Connection;
 use std::{
     path::PathBuf,
     sync::{
@@ -92,36 +93,30 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let threads = *args.get_one::<usize>("threads").unwrap();
-
-    let dbpool = db::open_db(args.get_one::<PathBuf>("db"), threads)?;
+    let conn = Connection::new(args.get_one::<PathBuf>("db"))?;
 
     let path = args.get_one::<PathBuf>("path");
 
     if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-        let conn = Database::new(dbpool.get()?);
         let count = conn.get_toencode_number()?;
         println!("Files to reencode:\t{}", style(count).green());
         return Ok(());
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()?;
-
     if let Some(realpath) = path {
         let hanlder = running.clone();
-        files::index_files_recursively(realpath, &dbpool, hanlder)?;
+        files::index_files_recursively(realpath, &conn, hanlder)?;
     }
 
     if args.get_flag("clean") {
         let handler = running.clone();
-        pool.install(|| files::clean_files(&dbpool, handler))?;
+        files::clean_files(&conn, handler)?;
     }
 
     if args.get_flag("doit") {
         let hanlder = running.clone();
-        pool.install(|| files::reencode_files(&dbpool, hanlder))?;
+        let threads = *args.get_one::<usize>("threads").unwrap();
+        files::reencode_files(conn, hanlder, threads)?;
     }
     Ok::<(), anyhow::Error>(())
 }

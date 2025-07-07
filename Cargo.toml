@@ -26,16 +26,17 @@ rayon = "1.10.0"
 rusqlite = { version = "0.36.0", default-features = false, features = [
     "modern_sqlite",
 ] }
-r2d2_sqlite = "0.30.0"
-r2d2 = "0.8.10"
 ctrlc = "3.4.7"
 
 [features]
+default = ["bundled"]
 bundled = ["rusqlite/bundled", "flac-bound/libflac-noogg"]
 linked = ["flac-bound/libflac-nobuild"]
 
 [dev-dependencies]
-flac-bound = { version = "0.5.0", default-features = false, features = ["libflac-nobuild"] }
+flac-bound = { version = "0.5.0", default-features = false, features = [
+    "libflac-nobuild",
+] }
 
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.36.0", default-features = false, features = [
