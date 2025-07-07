@@ -84,7 +84,7 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
     {
         if handler.load(Ordering::SeqCst) {
             let _ =
-                encoder.process_interleaved(samples, samples.len() as u32 / streaminfo.channels);
+                encoder.process_interleaved(samples, 1);
         } else {
             let _ = std::fs::remove_file(temp_name);
             return Ok(true);
