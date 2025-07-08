@@ -49,15 +49,22 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
     let mut decoder = FlacReader::open(&filename)?;
     let streaminfo = decoder.streaminfo();
 
-    let mut encoder = FlacEncoder::new()
-        .unwrap()
-        .channels(streaminfo.channels)
-        .bits_per_sample(streaminfo.bits_per_sample)
-        .sample_rate(streaminfo.sample_rate)
-        .compression_level(8)
-        .verify(false)
-        .init_file(&temp_name)
-        .unwrap();
+    let mut encoder = if let Some(encoder) = FlacEncoder::new() {
+        if let Ok(encoder) = encoder
+            .channels(streaminfo.channels)
+            .bits_per_sample(streaminfo.bits_per_sample)
+            .sample_rate(streaminfo.sample_rate)
+            .compression_level(8)
+            .verify(false)
+            .init_file(&temp_name)
+        {
+            encoder
+        } else {
+            return Err(anyhow!("failed to create encoder"));
+        }
+    } else {
+        return Err(anyhow!("failed to create encoder"));
+    };
 
     let mut hasher = Md5::new();
 
@@ -83,8 +90,7 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
         .chunks(streaminfo.channels as usize)
     {
         if handler.load(Ordering::SeqCst) {
-            let _ =
-                encoder.process_interleaved(samples, 1);
+            let _ = encoder.process_interleaved(samples, 1);
         } else {
             let _ = std::fs::remove_file(temp_name);
             return Ok(true);
