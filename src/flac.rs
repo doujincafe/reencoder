@@ -49,6 +49,9 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
     let mut decoder = FlacReader::open(&filename)?;
     let streaminfo = decoder.streaminfo();
 
+    let num_channels: usize = streaminfo.channels.try_into()?;
+    let bps = streaminfo.bits_per_sample;
+
     let mut encoder = if let Some(encoder) = FlacEncoder::new() {
         if let Ok(encoder) = encoder
             .channels(streaminfo.channels)
@@ -68,29 +71,36 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
 
     let mut hasher = Md5::new();
 
-    for samples in decoder
-        .samples()
-        .map(|res| {
-            let sample = res.unwrap();
-            match streaminfo.bits_per_sample {
+    let mut samples_iter = decoder.samples();
+
+    let mut buf = Vec::with_capacity(num_channels);
+
+    while let Some(Ok(sample)) = samples_iter.next() {
+        if handler.load(Ordering::SeqCst) {
+            match bps {
                 16 => {
-                    hasher.update(i16::try_from(sample).unwrap().to_le_bytes());
+                    hasher.update(i16::try_from(sample)?.to_le_bytes());
                 }
                 24 => {
-                    hasher.update(i24::i24::try_from_i32(sample).unwrap().to_le_bytes());
+                    hasher.update(if let Some(conv_sample) = i24::i24::try_from_i32(sample) {
+                        conv_sample.to_le_bytes()
+                    } else {
+                        return Err(anyhow!("failed to hash samples"));
+                    });
                 }
                 32 => {
                     hasher.update(sample.to_le_bytes());
                 }
                 _ => {}
             }
-            sample
-        })
-        .collect::<Vec<i32>>()
-        .chunks(streaminfo.channels as usize)
-    {
-        if handler.load(Ordering::SeqCst) {
-            let _ = encoder.process_interleaved(samples, 1);
+            buf.push(sample);
+
+            if num_channels == buf.len() {
+                if let Err(_) = encoder.process_interleaved(&buf, 1) {
+                    return Err(anyhow!("failed to process samples:\t{:?}", encoder.state()));
+                };
+                buf.clear();
+            }
         } else {
             let _ = std::fs::remove_file(temp_name);
             return Ok(true);
