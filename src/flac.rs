@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use claxon::{FlacReader, FlacReaderOptions};
 use flac_bound::FlacEncoder;
-use md5::{Digest, Md5};
 use metaflac::{Block, Tag};
 use std::{
     path::Path,
@@ -13,15 +12,14 @@ use std::{
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
-fn write_tags(filename: impl AsRef<Path>, hash: Vec<u8>) -> Result<()> {
+fn write_tags(filename: impl AsRef<Path>) -> Result<()> {
     let tags = Tag::read_from_path(&filename)?;
     let temp_name = filename.as_ref().with_extension("tmp");
     let mut output = Tag::read_from_path(&temp_name)?;
 
-    let mut streaminfo = tags.get_streaminfo().unwrap().clone();
-
-    streaminfo.md5 = hash;
-    output.set_streaminfo(streaminfo);
+    if let Some(streaminfo) = tags.get_streaminfo() {
+        output.set_streaminfo(streaminfo.clone());
+    }
 
     for block in tags.blocks() {
         match block {
@@ -50,7 +48,6 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
     let streaminfo = decoder.streaminfo();
 
     let num_channels: usize = streaminfo.channels.try_into()?;
-    let bps = streaminfo.bits_per_sample;
 
     let mut encoder = if let Some(encoder) = FlacEncoder::new() {
         if let Ok(encoder) = encoder
@@ -69,50 +66,44 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
         return Err(anyhow!("failed to create encoder"));
     };
 
-    let mut hasher = Md5::new();
+    let mut frame_reader = decoder.blocks();
+    let mut buffer = Vec::new();
+    let mut block_buffer =
+        Vec::with_capacity(streaminfo.max_block_size as usize * num_channels as usize);
 
-    let mut samples_iter = decoder.samples();
-
-    let mut buf = Vec::with_capacity(num_channels);
-
-    while let Some(Ok(sample)) = samples_iter.next() {
-        if handler.load(Ordering::SeqCst) {
-            match bps {
-                16 => {
-                    hasher.update(i16::try_from(sample)?.to_le_bytes());
-                }
-                24 => {
-                    hasher.update(if let Some(conv_sample) = i24::i24::try_from_i32(sample) {
-                        conv_sample.to_le_bytes()
-                    } else {
-                        return Err(anyhow!("failed to hash samples"));
-                    });
-                }
-                32 => {
-                    hasher.update(sample.to_le_bytes());
-                }
-                _ => {}
-            }
-            buf.push(sample);
-
-            if num_channels == buf.len() {
-                if let Err(_) = encoder.process_interleaved(&buf, 1) {
-                    return Err(anyhow!("failed to process samples:\t{:?}", encoder.state()));
-                };
-                buf.clear();
-            }
-        } else {
-            let _ = std::fs::remove_file(temp_name);
+    loop {
+        if !handler.load(Ordering::SeqCst) {
+            let _ = encoder.finish();
+            std::fs::remove_file(temp_name)?;
             return Ok(true);
+        }
+        match frame_reader.read_next_or_eof(block_buffer) {
+            Ok(Some(block)) => {
+                for sample in 0..(block.len() / block.channels()) {
+                    for ch in 0..block.channels() {
+                        buffer.push(block.sample(ch, sample));
+                    }
+                }
+
+                if let Err(_) = encoder.process_interleaved(&buffer, block.len() / block.channels())
+                {
+                    return Err(anyhow!(
+                        "Error while processing samples:\t{:?}",
+                        encoder.state()
+                    ));
+                };
+                buffer.clear();
+                block_buffer = block.into_buffer();
+            }
+            Ok(None) => break,
+            Err(error) => return Err(error.into()),
         }
     }
 
     if let Err(enc) = encoder.finish() {
         return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
     }
-
-    let hash = hasher.finalize().to_vec();
-    write_tags(&filename, hash)?;
+    write_tags(&filename)?;
     std::fs::rename(temp_name, filename)?;
     Ok(false)
 }
@@ -154,11 +145,12 @@ mod tests {
         std::fs::copy(name, tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
         encode_file(name, handler).unwrap();
-        let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
-        let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
-
+        let output = std::process::Command::new("flac")
+            .arg("-wts")
+            .arg(name)
+            .status();
         std::fs::rename(tempname, name).unwrap();
-        assert_eq!(target_md5, temp_md5);
+        assert!(output.unwrap().success());
     }
 
     #[test]
@@ -168,11 +160,12 @@ mod tests {
         std::fs::copy(name, tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
         encode_file(name, handler).unwrap();
-        let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
-        let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
-
+        let output = std::process::Command::new("flac")
+            .arg("-wts")
+            .arg(name)
+            .status();
         std::fs::rename(tempname, name).unwrap();
-        assert_eq!(target_md5, temp_md5);
+        assert!(output.unwrap().success());
     }
 
     #[test]
@@ -182,10 +175,11 @@ mod tests {
         std::fs::copy(name, tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
         encode_file(name, handler).unwrap();
-        let target_md5 = FlacReader::open(tempname).unwrap().streaminfo().md5sum;
-        let temp_md5 = FlacReader::open(name).unwrap().streaminfo().md5sum;
-
+        let output = std::process::Command::new("flac")
+            .arg("-wts")
+            .arg(name)
+            .status();
         std::fs::rename(tempname, name).unwrap();
-        assert_eq!(target_md5, temp_md5);
+        assert!(output.unwrap().success());
     }
 }
