@@ -207,6 +207,8 @@ pub fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(SPINNER_TEMPLATE)?);
+    #[cfg(not(test))]
+    spinner.tick();
 
     files.iter().for_each(|file| {
         if handler.load(Ordering::SeqCst) && !file.exists() {
