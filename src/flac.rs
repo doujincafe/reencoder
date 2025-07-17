@@ -12,26 +12,24 @@ use std::{
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
+const BADTAGS: [&str; 2] = ["encoded by", "encoder"];
+
 fn write_tags(filename: impl AsRef<Path>) -> Result<()> {
     let tags = Tag::read_from_path(&filename)?;
     let temp_name = filename.as_ref().with_extension("tmp");
     let mut output = Tag::read_from_path(&temp_name)?;
 
-    if let Some(streaminfo) = tags.get_streaminfo() {
-        output.set_streaminfo(streaminfo.clone());
-    }
-
     for block in tags.blocks() {
         match block {
-            Block::VorbisComment(comment) => {
-                for (key, val) in comment.comments.clone() {
-                    if key.to_lowercase() != "encoder" || key.to_lowercase() != "encoded by" {
-                        output.set_vorbis(key, val);
+            Block::VorbisComment(block) => {
+                for (key, val) in block.comments.iter() {
+                    if !BADTAGS.contains(&key.to_lowercase().as_str()) {
+                        output.set_vorbis(key, val.to_owned());
                     }
                 }
             }
-            Block::StreamInfo(_) | Block::Padding(_) => {}
-            _ => output.push_block(block.clone()),
+            Block::Padding(_) => {}
+            _ => output.push_block(block.to_owned()),
         }
     }
 
@@ -68,36 +66,34 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
 
     let mut frame_reader = decoder.blocks();
     let mut buffer = Vec::new();
-    let mut block_buffer =
-        Vec::with_capacity(streaminfo.max_block_size as usize * num_channels as usize);
+    let mut block_buffer = Vec::with_capacity(streaminfo.max_block_size as usize * num_channels);
 
-    loop {
-        if !handler.load(Ordering::SeqCst) {
-            let _ = encoder.finish();
-            std::fs::remove_file(temp_name)?;
-            return Ok(true);
-        }
+    while handler.load(Ordering::SeqCst) {
         match frame_reader.read_next_or_eof(block_buffer) {
             Ok(Some(block)) => {
-                for sample in 0..(block.len() / block.channels()) {
-                    for ch in 0..block.channels() {
-                        buffer.push(block.sample(ch, sample));
-                    }
+                for ch in 0..block.channels() {
+                    buffer.push(block.channel(ch));
                 }
 
-                if let Err(_) = encoder.process_interleaved(&buffer, block.len() / block.channels())
-                {
+                if encoder.process(&buffer).is_err() {
                     return Err(anyhow!(
                         "Error while processing samples:\t{:?}",
                         encoder.state()
                     ));
                 };
                 buffer.clear();
+                buffer = buffer.into_iter().map(|_| unreachable!()).collect();
                 block_buffer = block.into_buffer();
             }
             Ok(None) => break,
             Err(error) => return Err(error.into()),
         }
+    }
+
+    if !handler.load(Ordering::SeqCst) {
+        let _ = encoder.finish();
+        std::fs::remove_file(temp_name)?;
+        return Ok(true);
     }
 
     if let Err(enc) = encoder.finish() {
