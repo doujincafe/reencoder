@@ -186,6 +186,10 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
         });
     }
 
+    while *thread_counter.read().unwrap() != 0 {
+        sleep(time::Duration::from_millis(100));
+    }
+
     #[cfg(not(test))]
     {
         if handler.load(Ordering::SeqCst) {
