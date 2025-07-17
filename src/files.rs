@@ -146,8 +146,9 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
     let lock = Arc::new(Mutex::new(conn));
 
     while handler.load(Ordering::SeqCst) {
-        while *thread_counter.read().unwrap() >= threads {
+        if *thread_counter.read().unwrap() >= threads {
             sleep(time::Duration::from_millis(100));
+            continue;
         }
 
         let file = match files.next() {
