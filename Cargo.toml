@@ -20,7 +20,6 @@ walkdir = "2.5.0"
 console = { version = "0.15.11", features = ["windows-console-colors"] }
 claxon = { git = "https://github.com/justjakka/claxon.git" }
 metaflac = "0.2.8"
-rayon = "1.10.0"
 rusqlite = { version = "0.36.0", default-features = false, features = [
     "modern_sqlite",
 ] }

@@ -1,17 +1,17 @@
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rayon::prelude::*;
 use rusqlite::Connection;
 use std::{
     error::Error,
     fmt::Display,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::UNIX_EPOCH,
+    thread::{self, sleep},
+    time::{self, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 
@@ -130,7 +130,7 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>) -> Result<()> {
+pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
         Some(conn.get_toencode_number()?),
@@ -139,33 +139,51 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>) -> Result<()> 
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    let files = conn.get_toencode_files()?;
+    let mut files = conn.get_toencode_files()?.into_iter();
+
+    let thread_counter = Arc::new(RwLock::new(0_usize));
 
     let lock = Arc::new(Mutex::new(conn));
 
-    files.par_iter().for_each(|file| {
-        if handler.load(Ordering::SeqCst) {
-            let newhandler = handler.clone();
-            match handle_encode(file, newhandler) {
-                Err(error) => eprintln!("{}", FileError::new(file, error)),
+    while handler.load(Ordering::SeqCst) {
+        while *thread_counter.read().unwrap() >= threads {
+            sleep(time::Duration::from_millis(100));
+        }
+
+        let file = match files.next() {
+            Some(file) => file,
+            None => break,
+        };
+
+        let newhandler = handler.clone();
+        let newlock = lock.clone();
+        #[cfg(not(test))]
+        let newbar = bar.clone();
+        let newcounter = thread_counter.clone();
+        *thread_counter.write().unwrap() += 1;
+
+        let _ = thread::spawn(move || {
+            match handle_encode(&file, newhandler) {
+                Err(error) => eprintln!("{}", FileError::new(&file, error)),
                 Ok(false) => {
-                    let conn = match lock.lock() {
+                    let conn = match newlock.lock() {
                         Ok(conn) => conn,
                         Err(_) => {
                             eprintln!("Lock poisoned on file:\t{}", file.to_string_lossy());
                             return;
                         }
                     };
-                    if let Err(error) = conn.update_file(file) {
+                    if let Err(error) = conn.update_file(&file) {
                         eprintln!("{}", FileError::new(file, error));
                     }
                     #[cfg(not(test))]
-                    bar.inc(1)
+                    newbar.inc(1)
                 }
                 Ok(true) => {}
-            }
-        }
-    });
+            };
+            *newcounter.write().unwrap() -= 1;
+        });
+    }
 
     #[cfg(not(test))]
     {
@@ -247,7 +265,7 @@ mod tests {
         let temp = handler.clone();
         index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
         println!("\n{}", conn.get_toencode_number().unwrap());
-        reencode_files(conn, handler).unwrap();
+        reencode_files(conn, handler, 4).unwrap();
         let conn = Connection::new(Some(&dbname)).unwrap();
         println!("\n{}", conn.get_toencode_number().unwrap());
         std::fs::remove_file(dbname).unwrap();

@@ -116,11 +116,7 @@ fn main() -> Result<()> {
     if args.get_flag("doit") {
         let hanlder = running.clone();
         let threads = *args.get_one::<usize>("threads").unwrap();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()?;
-
-        pool.install(|| files::reencode_files(conn, hanlder))?;
+        files::reencode_files(conn, hanlder, threads)?;
     }
     Ok::<(), anyhow::Error>(())
 }
