@@ -12,7 +12,7 @@ use std::{
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
-const BADTAGS: [&str; 2] = ["encoded by", "encoder"];
+const BADTAGS: [&str; 2] = ["encoded_by", "encoder"];
 
 fn write_tags(filename: impl AsRef<Path>) -> Result<()> {
     let tags = Tag::read_from_path(&filename)?;
