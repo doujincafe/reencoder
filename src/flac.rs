@@ -1,14 +1,30 @@
 use anyhow::{Result, anyhow};
-use claxon::{FlacReader, FlacReaderOptions};
 use flac_bound::FlacEncoder;
 use metaflac::{Block, Tag};
 use std::{
-    path::Path,
+    fs::File,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+use symphonia::core::{
+    audio::{
+        Audio, AudioBuffer, AudioBytes,
+        sample::{Sample, SampleFormat},
+    },
+    codecs::audio::{AudioDecoder, AudioDecoderOptions},
+    formats::{FormatOptions, FormatReader, TrackType, probe::Hint},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+};
+
+struct StreamInfo {
+    channels: u32,
+    bps: u32,
+    sample_rate: u32,
+}
 
 pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 
@@ -37,20 +53,54 @@ fn write_tags(filename: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
+fn init_decoder(
+    file: Box<File>,
+) -> Result<(
+    u32,
+    Box<dyn AudioDecoder>,
+    StreamInfo,
+    Box<dyn FormatReader>,
+)> {
+    let mut hint = Hint::new();
+    hint.with_extension("flac");
+    let mss = MediaSourceStream::new(file, Default::default());
+    let fmt_opts = FormatOptions::default();
+    let meta_opts: MetadataOptions = Default::default();
+    let dec_opts: AudioDecoderOptions = Default::default();
+
+    let probed = symphonia::default::get_probe().probe(&hint, mss, fmt_opts, meta_opts)?;
+
+    let track = probed.default_track(TrackType::Audio).unwrap();
+
+    let codec_params = track.codec_params.as_ref().unwrap().audio().unwrap();
+
+    let decoder = symphonia::default::get_codecs().make_audio_decoder(&codec_params, &dec_opts)?;
+
+    let track_id = track.id;
+
+    let streaminfo = StreamInfo {
+        channels: u32::try_from(codec_params.channels.clone().unwrap().count())?,
+        bps: codec_params.bits_per_sample.unwrap(),
+        sample_rate: codec_params.sample_rate.unwrap(),
+    };
+
+    Ok((track_id, decoder, streaminfo, probed))
+}
+
 fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<bool> {
     let temp_name = filename.as_ref().with_extension("tmp");
     if temp_name.exists() {
         std::fs::remove_file(&temp_name)?;
     }
-    let mut decoder = FlacReader::open(&filename)?;
-    let streaminfo = decoder.streaminfo();
 
-    let num_channels: usize = streaminfo.channels.try_into()?;
+    let file = Box::new(File::open(&filename)?);
+
+    let (id, mut decoder, streaminfo, mut probe) = init_decoder(file)?;
 
     let mut encoder = if let Some(encoder) = FlacEncoder::new() {
         if let Ok(encoder) = encoder
             .channels(streaminfo.channels)
-            .bits_per_sample(streaminfo.bits_per_sample)
+            .bits_per_sample(streaminfo.bps)
             .sample_rate(streaminfo.sample_rate)
             .compression_level(8)
             .verify(false)
@@ -64,29 +114,32 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
         return Err(anyhow!("failed to create encoder"));
     };
 
-    let mut frame_reader = decoder.blocks();
-    let mut buffer = Vec::new();
-    let mut block_buffer = Vec::with_capacity(streaminfo.max_block_size as usize * num_channels);
+    let mut sample_buf: Option<AudioBuffer<i32>> = None;
 
     while handler.load(Ordering::SeqCst) {
-        match frame_reader.read_next_or_eof(block_buffer) {
-            Ok(Some(block)) => {
-                for ch in 0..block.channels() {
-                    buffer.push(block.channel(ch));
+        let packet = if let Some(packet) = probe.next_packet()? {
+            packet
+        } else {
+            break;
+        };
+
+        if packet.track_id() != id {
+            continue;
+        }
+
+        match decoder.decode(&packet) {
+            Ok(audio_buf) => {
+                if sample_buf.is_none() {
+                    let spec = *audio_buf.spec();
+
+                    sample_buf = Some(AudioBuffer::new(spec, audio_buf.capacity()));
                 }
 
-                if encoder.process(&buffer).is_err() {
-                    return Err(anyhow!(
-                        "Error while processing samples:\t{:?}",
-                        encoder.state()
-                    ));
-                };
-                buffer.clear();
-                buffer = buffer.into_iter().map(|_| unreachable!()).collect();
-                block_buffer = block.into_buffer();
+                if let Some(buf) = &mut sample_buf {
+                    todo!()
+                }
             }
-            Ok(None) => break,
-            Err(error) => return Err(error.into()),
+            Err(err) => return Err(err.into()),
         }
     }
 
