@@ -141,54 +141,48 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
 
     let mut files = conn.get_toencode_files()?.into_iter();
 
-    let thread_counter = Arc::new(AtomicUsize::new(0));
-
     let lock = Arc::new(Mutex::new(conn));
 
-    while handler.load(Ordering::SeqCst) {
-        if thread_counter.load(Ordering::Relaxed) >= threads {
-            sleep(Duration::from_millis(100));
-            continue;
-        }
+    let thread_counter = Arc::new(AtomicUsize::new(0));
 
-        let file = match files.next() {
-            Some(file) => file,
-            None => break,
-        };
+    thread::scope(|s| {
+        while handler.load(Ordering::SeqCst) {
+            if thread_counter.load(Ordering::Relaxed) >= threads {
+                sleep(Duration::from_millis(100));
+                #[cfg(not(test))]
+                bar.tick();
+                continue;
+            }
 
-        let newhandler = handler.clone();
-        let newlock = lock.clone();
-        #[cfg(not(test))]
-        let newbar = bar.clone();
-        let newcounter = thread_counter.clone();
-        thread_counter.fetch_add(1, Ordering::Relaxed);
-
-        let _ = thread::spawn(move || {
-            match handle_encode(&file, newhandler) {
-                Err(error) => eprintln!("{}", FileError::new(&file, error)),
-                Ok(false) => {
-                    let conn = match newlock.lock() {
-                        Ok(conn) => conn,
-                        Err(_) => {
-                            eprintln!("Lock poisoned on file:\t{}", file.to_string_lossy());
-                            return;
-                        }
-                    };
-                    if let Err(error) = conn.update_file(&file) {
-                        eprintln!("{}", FileError::new(file, error));
-                    }
-                    #[cfg(not(test))]
-                    newbar.inc(1)
-                }
-                Ok(true) => {}
+            let file = match files.next() {
+                Some(file) => file,
+                None => break,
             };
-            newcounter.fetch_sub(1, Ordering::Relaxed);
-        });
-    }
 
-    while thread_counter.load(Ordering::Relaxed) != 0 {
-        sleep(Duration::from_millis(100));
-    }
+            thread_counter.fetch_add(1, Ordering::Relaxed);
+
+            let handler = handler.clone();
+            let lock = lock.clone();
+            #[cfg(not(test))]
+            let bar = bar.clone();
+            let thread_counter = thread_counter.clone();
+
+            s.spawn(move || {
+                match handle_encode(&file, handler) {
+                    Err(error) => eprintln!("{}", FileError::new(&file, error)),
+                    Ok(false) => {
+                        if let Err(error) = lock.lock().unwrap().update_file(&file) {
+                            eprintln!("{}", FileError::new(file, error));
+                        }
+                        #[cfg(not(test))]
+                        bar.inc(1)
+                    }
+                    Ok(true) => {}
+                };
+                thread_counter.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+    });
 
     #[cfg(not(test))]
     {
