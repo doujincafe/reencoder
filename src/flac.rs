@@ -1,19 +1,16 @@
 use anyhow::{Result, anyhow};
 use flac_bound::FlacEncoder;
-use metaflac::{Block, Tag};
+use metaflac::{Block, BlockType, Tag};
 use std::{
     fs::File,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 use symphonia::core::{
-    audio::{
-        Audio, AudioBuffer, AudioBytes,
-        sample::{Sample, SampleFormat},
-    },
+    audio::{Audio, AudioBuffer},
     codecs::audio::{AudioDecoder, AudioDecoderOptions},
     formats::{FormatOptions, FormatReader, TrackType, probe::Hint},
     io::MediaSourceStream,
@@ -130,13 +127,29 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
                 if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
+                    let spec = audio_buf.spec().clone();
 
                     sample_buf = Some(AudioBuffer::new(spec, audio_buf.capacity()));
                 }
 
                 if let Some(buf) = &mut sample_buf {
-                    todo!()
+                    let buffer = buf
+                        .iter_interleaved()
+                        .map(|s| {
+                            println!("{s} ");
+                            s
+                        })
+                        .collect::<Vec<i32>>();
+
+                    if encoder
+                        .process_interleaved(&buffer, u32::try_from(buf.samples_planar()).unwrap())
+                        .is_err()
+                    {
+                        return Err(anyhow!(
+                            "Error while processing samples:\t{:?}",
+                            encoder.state()
+                        ));
+                    }
                 }
             }
             Err(err) => return Err(err.into()),
@@ -168,16 +181,9 @@ pub fn handle_encode(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Re
 }
 
 pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {
-    if let Some(vendor) = FlacReader::open_ext(
-        file,
-        FlacReaderOptions {
-            metadata_only: true,
-            read_vorbis_comment: true,
-        },
-    )?
-    .vendor()
-    {
-        Ok(vendor.to_string())
+    let tags = Tag::read_from_path(file)?;
+    if let Some(Block::VorbisComment(comment)) = tags.get_blocks(BlockType::VorbisComment).next() {
+        Ok(comment.vendor_string.to_owned())
     } else {
         Err(anyhow!("Vendor string not found"))
     }
