@@ -1,6 +1,6 @@
 [package]
 name = "flac-reencoder"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 repository = "https://github.com/justjakka/reencoder/"
 license = "BSD-3-Clause"

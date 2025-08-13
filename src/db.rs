@@ -9,9 +9,9 @@ use std::{
 use crate::flac::{CURRENT_VENDOR, get_vendor};
 
 const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
-const ADD_NEW_ITEM: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
-const REPLACE_ITEM: &str = "REPLACE INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
-const TOENCODE_QUERY: &str = "SELECT path FROM flacs WHERE toencode";
+const ADD_ITEM: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
+const UPDATE_ITEM: &str = "UPDATE flacs SET toencode = ?2, modtime = ?3 WHERE path = ?1";
+const TOENCODE_PATHS: &str = "SELECT path FROM flacs WHERE toencode";
 const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
@@ -60,7 +60,7 @@ impl Database for Connection {
             .as_secs();
 
         self.execute(
-            ADD_NEW_ITEM,
+            ADD_ITEM,
             params![filename.as_ref().to_str().unwrap(), toencode, modtime],
         )?;
 
@@ -76,7 +76,7 @@ impl Database for Connection {
             .as_secs();
 
         self.execute(
-            REPLACE_ITEM,
+            UPDATE_ITEM,
             params![filename.as_ref().to_str().unwrap(), false, modtime],
         )?;
 
@@ -116,7 +116,7 @@ impl Database for Connection {
     }
 
     fn get_toencode_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error> {
-        let mut stmt = self.prepare(TOENCODE_QUERY)?;
+        let mut stmt = self.prepare(TOENCODE_PATHS)?;
         let mut rows = stmt.query(())?;
         let mut files: Vec<PathBuf> = Vec::new();
         while let Ok(Some(row)) = rows.next() {
@@ -168,7 +168,7 @@ mod tests {
         for file in filenames {
             conn.insert_file(&file.to_string()).unwrap();
         }
-        let mut stmt = conn.prepare(TOENCODE_QUERY).unwrap();
+        let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
         let mut returned = stmt.query(()).unwrap();
 
         while let Ok(Some(_)) = returned.next() {
@@ -193,7 +193,7 @@ mod tests {
         }
 
         conn.execute(
-            REPLACE_ITEM,
+            UPDATE_ITEM,
             params![
                 Path::new("./samples/16bit.flac")
                     .canonicalize()
@@ -215,7 +215,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut stmt = conn.prepare(TOENCODE_QUERY).unwrap();
+        let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
         let mut returned = stmt.query(()).unwrap();
         let mut counter = 0;
         while let Ok(Some(_)) = returned.next() {
