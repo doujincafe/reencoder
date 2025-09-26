@@ -247,7 +247,7 @@ mod tests {
         ];
         std::fs::copy("./samples/32bit.flac", "./samples/nonexisting.flac").unwrap();
         for file in filenames {
-            conn.insert_file(&file.to_string()).unwrap();
+            conn.insert_file(&file).unwrap();
         }
 
         std::fs::remove_file("./samples/nonexisting.flac").unwrap();
