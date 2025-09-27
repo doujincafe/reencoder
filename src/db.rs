@@ -1,16 +1,15 @@
+use crate::flac::{CURRENT_VENDOR, get_vendor};
 use anyhow::{Result, anyhow};
 use directories::BaseDirs;
-use rusqlite::{Connection, params};
 use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-
-use crate::flac::{CURRENT_VENDOR, get_vendor};
+use turso::{Connection, params};
 
 const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
-const ADD_ITEM: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
-const UPDATE_ITEM: &str = "UPDATE flacs SET toencode = ?2, modtime = ?3 WHERE path = ?1";
+const ADD_FILE: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
+const UPDATE_FILE: &str = "UPDATE flacs SET toencode = ?2, modtime = ?3 WHERE path = ?1";
 const TOENCODE_PATHS: &str = "SELECT path FROM flacs WHERE toencode";
 const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
@@ -20,208 +19,200 @@ const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
-pub trait Database {
-    type Conn;
-    fn new(path: Option<impl AsRef<Path>>) -> Result<Self::Conn>;
-    fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()>;
-    fn update_file(&self, filename: impl AsRef<Path>) -> Result<()>;
-    fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool>;
-    fn init_clean_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error>;
-    fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()>;
-    fn get_toencode_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error>;
-    fn get_toencode_number(&self) -> Result<u64, rusqlite::Error>;
-    fn get_modtime(&self, file: impl AsRef<Path>) -> Result<u64>;
-    fn vacuum(&self) -> Result<()>;
+async fn init_db(path: Option<&Path>) -> Result<turso::Database> {
+    let db = if let Some(file) = path {
+        turso::Builder::new_local(file.to_str().unwrap())
+            .build()
+            .await?
+    } else if let Some(base_dir) = BaseDirs::new() {
+        let file = base_dir.data_dir().join("reencoder.db");
+        turso::Builder::new_local(file.to_str().unwrap())
+            .build()
+            .await?
+    } else {
+        return Err(anyhow!("Failed to locate data directory"));
+    };
+    let conn = db.connect()?;
+    conn.execute(TABLE_CREATE, ()).await?;
+    Ok(db)
 }
 
-impl Database for Connection {
-    type Conn = Connection;
-    fn new(path: Option<impl AsRef<Path>>) -> Result<Self> {
-        let conn = if let Some(file) = path {
-            Connection::open(file)?
-        } else if let Some(base_dir) = BaseDirs::new() {
-            let file = Path::new(base_dir.data_dir()).join("reencoder.db");
-            Connection::open(file)?
-        } else {
-            return Err(anyhow!("Failed to locate data directory"));
-        };
-        conn.execute(TABLE_CREATE, ())?;
-        Ok(conn)
+async fn insert_file(conn: &Connection, filename: &Path) -> Result<()> {
+    let toencode = !matches!(get_vendor(filename)?.as_str(), CURRENT_VENDOR);
+
+    let modtime = filename
+        .metadata()?
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs();
+
+    conn.execute(
+        ADD_FILE,
+        params![filename.to_str().unwrap(), toencode, modtime],
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn update_file(conn: &Connection, filename: &Path) -> Result<()> {
+    let modtime = filename
+        .metadata()?
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs();
+
+    conn.execute(
+        UPDATE_FILE,
+        params![filename.to_str().unwrap(), false, modtime],
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
+    Ok(conn
+        .query(CHECK_FILE, params!(filename.to_str().unwrap()))
+        .await?
+        .next()
+        .await?
+        .unwrap()
+        .get::<bool>(0)?)
+}
+
+async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
+    conn.execute(DEDUPE_DB, ()).await?;
+    let mut rows = conn.query(FETCH_FILES, ()).await?;
+    let mut files = Vec::new();
+    while let Ok(Some(row)) = rows.next().await {
+        let path = row.get::<String>(0)?;
+        files.push(PathBuf::from(path));
     }
+    Ok(files)
+}
 
-    fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
+async fn remove_file(conn: &Connection, filename: &Path) -> Result<()> {
+    conn.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))
+        .await?;
+    Ok(())
+}
 
-        let modtime = filename
-            .as_ref()
-            .metadata()?
-            .modified()?
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
-
-        self.execute(
-            ADD_ITEM,
-            params![filename.as_ref().to_str().unwrap(), toencode, modtime],
-        )?;
-
-        Ok(())
+async fn get_toencode_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
+    let mut rows = conn.query(TOENCODE_PATHS, ()).await?;
+    let mut files: Vec<PathBuf> = Vec::new();
+    while let Ok(Some(row)) = rows.next().await {
+        let path = row.get::<String>(0)?;
+        files.push(PathBuf::from(path));
     }
+    Ok(files)
+}
 
-    fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        let modtime = filename
-            .as_ref()
-            .metadata()?
-            .modified()?
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
+async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
+    Ok(conn
+        .query(TOENCODE_NUMBER, ())
+        .await?
+        .next()
+        .await?
+        .unwrap()
+        .get::<u64>(0)?)
+}
 
-        self.execute(
-            UPDATE_ITEM,
-            params![filename.as_ref().to_str().unwrap(), false, modtime],
-        )?;
+async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
+    Ok(conn
+        .query(GET_MODTIME, params![file.to_str().unwrap()])
+        .await?
+        .next()
+        .await?
+        .unwrap()
+        .get::<u64>(0)?)
+}
 
-        Ok(())
-    }
-
-    fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
-        if self.query_one(
-            CHECK_FILE,
-            params!(filename.as_ref().to_str().unwrap()),
-            |row| {
-                let num: bool = row.get(0)?;
-                Ok(num)
-            },
-        )? {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn init_clean_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error> {
-        self.execute(DEDUPE_DB, ())?;
-        let mut stmt = self.prepare(FETCH_FILES)?;
-        let mut rows = stmt.query(())?;
-        let mut files = Vec::new();
-        while let Ok(Some(row)) = rows.next() {
-            let path: String = row.get(0)?;
-            files.push(PathBuf::from(path));
-        }
-        Ok(files)
-    }
-
-    fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        self.execute(REMOVE_FILE, params!(filename.as_ref().to_str().unwrap()))?;
-        Ok(())
-    }
-
-    fn get_toencode_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error> {
-        let mut stmt = self.prepare(TOENCODE_PATHS)?;
-        let mut rows = stmt.query(())?;
-        let mut files: Vec<PathBuf> = Vec::new();
-        while let Ok(Some(row)) = rows.next() {
-            let path: String = row.get(0)?;
-            files.push(PathBuf::from(path));
-        }
-        Ok(files)
-    }
-
-    fn get_toencode_number(&self) -> Result<u64, rusqlite::Error> {
-        self.query_one(TOENCODE_NUMBER, (), |row| {
-            let num: u64 = row.get(0)?;
-            Ok(num)
-        })
-    }
-
-    fn get_modtime(&self, file: impl AsRef<Path>) -> Result<u64> {
-        Ok(self.query_one(
-            GET_MODTIME,
-            params![file.as_ref().to_str().unwrap()],
-            |row| {
-                let modtime: u64 = row.get(0)?;
-                Ok(modtime)
-            },
-        )?)
-    }
-
-    fn vacuum(&self) -> Result<()> {
-        self.execute("VACUUM", ())?;
-        Ok(())
-    }
+async fn vacuum(conn: &Connection) -> Result<()> {
+    conn.execute("VACUUM", ()).await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use macro_rules_attribute::apply;
+    use smol_macros::{Executor, test};
 
-    #[test]
-    fn check_localfiles() {
-        let dbname = String::from("temp1.db");
+    #[apply(test!)]
+    async fn check_localfiles(ex: &Executor<'_>) {
+        let dbname = PathBuf::from("temp1.db");
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
             "./samples/32bit.flac",
         ];
         let mut counter = 0;
-        let conn = Connection::new(Some(&dbname)).unwrap();
-        for file in filenames {
-            conn.insert_file(&file.to_string()).unwrap();
-        }
-        let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
-        let mut returned = stmt.query(()).unwrap();
+        ex.spawn(async move {
+            let db = init_db(Some(&dbname)).await.unwrap();
+            let conn = db.connect().unwrap();
+            for file in filenames {
+                let path = PathBuf::from(file);
+                insert_file(&conn, &path).await.unwrap();
+            }
+            let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
 
-        while let Ok(Some(_)) = returned.next() {
-            counter += 1
-        }
-        std::fs::remove_file(dbname).unwrap();
-        assert!(counter == 0)
+            while let Ok(Some(_)) = returned.next().await {
+                counter += 1
+            }
+            std::fs::remove_file(dbname).unwrap();
+            assert!(counter == 0)
+        })
+        .await;
     }
 
-    #[test]
-    fn check_update() {
-        let dbname = String::from("temp2.db");
+    #[apply(test!)]
+    async fn check_update(ex: &Executor<'_>) {
+        let dbname = PathBuf::from("temp2.db");
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
             "./samples/32bit.flac",
         ];
-        let conn = Connection::new(Some(&dbname)).unwrap();
-        for file in filenames {
-            conn.insert_file(Path::new(file).canonicalize().unwrap())
-                .unwrap();
-        }
+        ex.spawn(async move {
+            let db = init_db(Some(&dbname)).await.unwrap();
+            let conn = db.connect().unwrap();
+            for file in filenames {
+                insert_file(&conn, &Path::new(file).canonicalize().unwrap())
+                    .await
+                    .unwrap();
+            }
 
-        conn.execute(
-            UPDATE_ITEM,
-            params![
-                Path::new("./samples/16bit.flac")
-                    .canonicalize()
-                    .unwrap()
-                    .to_str()
-                    .unwrap(),
-                true,
-                ""
-            ],
-        )
-        .unwrap();
+            conn.execute(
+                UPDATE_FILE,
+                params![
+                    Path::new("./samples/16bit.flac")
+                        .canonicalize()
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    true,
+                    ""
+                ],
+            )
+            .await
+            .unwrap();
 
-        conn.update_file(
-            Path::new("./samples/16bit.flac")
-                .canonicalize()
-                .unwrap()
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
+            update_file(
+                &conn,
+                &Path::new("./samples/16bit.flac").canonicalize().unwrap(),
+            )
+            .await
+            .unwrap();
 
-        let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
-        let mut returned = stmt.query(()).unwrap();
-        let mut counter = 0;
-        while let Ok(Some(_)) = returned.next() {
-            counter += 1
-        }
-        std::fs::remove_file(dbname).unwrap();
-        assert!(counter == 0)
+            let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
+            let mut counter = 0;
+            while let Ok(Some(_)) = returned.next().await {
+                counter += 1
+            }
+            std::fs::remove_file(dbname).unwrap();
+            assert!(counter == 0)
+        });
     }
 }
