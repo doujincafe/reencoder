@@ -29,9 +29,9 @@ struct FileError {
 }
 
 impl FileError {
-    fn new(file: impl AsRef<Path>, error: anyhow::Error) -> Self {
+    fn new(file: &Path, error: anyhow::Error) -> Self {
         FileError {
-            file: file.as_ref().to_path_buf(),
+            file: file.to_path_buf(),
             error,
         }
     }
@@ -50,35 +50,34 @@ impl Display for FileError {
 
 impl Error for FileError {}
 
-fn handle_file(file: impl AsRef<Path>, conn: &Connection) -> Result<()> {
-    if conn.check_file(&file)? {
+fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
+    if conn.check_file(file)? {
         let modtime = file
-            .as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
             .as_secs();
-        let db_modtime = conn.get_modtime(&file)?;
+        let db_modtime = conn.get_modtime(file)?;
         if modtime != db_modtime {
-            conn.update_file(&file)?;
+            conn.update_file(file)?;
         }
         return Ok(());
     }
 
-    conn.insert_file(&file)?;
+    conn.insert_file(file)?;
 
     Ok(())
 }
 
 pub fn index_files_recursively(
-    path: impl AsRef<Path>,
+    path: &Path,
     conn: &Connection,
     handler: Arc<AtomicBool>,
 ) -> Result<()> {
-    if !path.as_ref().is_dir() {
+    if !path.is_dir() {
         return Err(anyhow!("Invalid root directory"));
     }
-    let abspath = path.as_ref().canonicalize()?;
+    let abspath = path.canonicalize()?;
 
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
@@ -108,7 +107,7 @@ pub fn index_files_recursively(
             }
             if path.extension().is_some_and(|x| x == "flac") {
                 if let Err(error) = handle_file(&path, conn) {
-                    eprintln!("{}", FileError::new(path, error));
+                    eprintln!("{}", FileError::new(&path, error));
                 } else {
                     #[cfg(not(test))]
                     bar.inc(1);
@@ -172,7 +171,7 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
                     Err(error) => eprintln!("{}", FileError::new(&file, error)),
                     Ok(false) => {
                         if let Err(error) = lock.lock().unwrap().update_file(&file) {
-                            eprintln!("{}", FileError::new(file, error));
+                            eprintln!("{}", FileError::new(&file, error));
                         }
                         #[cfg(not(test))]
                         bar.inc(1)
@@ -205,6 +204,7 @@ pub fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
     spinner.tick();
 
     files.iter().for_each(|file| {
+        #[allow(clippy::collapsible_if)]
         if handler.load(Ordering::SeqCst) && !file.exists() {
             if let Err(error) = conn.remove_file(file) {
                 eprintln!("{}", FileError::new(file, error))
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_index_lots_of_files() {
-        let dbname = "temp3.db";
+        let dbname = PathBuf::from("temp3.db");
         let handler = Arc::new(AtomicBool::new(true));
         let conn = Connection::new(Some(&dbname)).unwrap();
         index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_clean_files() {
-        let dbname = "temp4.db";
+        let dbname = PathBuf::from("temp4.db");
         let handler = Arc::new(AtomicBool::new(true));
         let conn = Connection::new(Some(&dbname)).unwrap();
         let filenames = [
@@ -247,7 +247,8 @@ mod tests {
         ];
         std::fs::copy("./samples/32bit.flac", "./samples/nonexisting.flac").unwrap();
         for file in filenames {
-            conn.insert_file(&file).unwrap();
+            let filename = PathBuf::from(file);
+            conn.insert_file(&filename).unwrap();
         }
 
         std::fs::remove_file("./samples/nonexisting.flac").unwrap();
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_reencode_lots_of_files() {
-        let dbname = "temp5.db";
+        let dbname = PathBuf::from("temp5.db");
         let handler = Arc::new(AtomicBool::new(true));
         let conn = Connection::new(Some(&dbname)).unwrap();
         let temp = handler.clone();

@@ -22,21 +22,21 @@ const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
 pub trait Database {
     type Conn;
-    fn new(path: Option<impl AsRef<Path>>) -> Result<Self::Conn>;
-    fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()>;
-    fn update_file(&self, filename: impl AsRef<Path>) -> Result<()>;
-    fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool>;
+    fn new(path: Option<&PathBuf>) -> Result<Self::Conn>;
+    fn insert_file(&self, filename: &Path) -> Result<()>;
+    fn update_file(&self, filename: &Path) -> Result<()>;
+    fn check_file(&self, filename: &Path) -> Result<bool>;
     fn init_clean_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error>;
-    fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()>;
+    fn remove_file(&self, filename: &Path) -> Result<()>;
     fn get_toencode_files(&self) -> Result<Vec<PathBuf>, rusqlite::Error>;
     fn get_toencode_number(&self) -> Result<u64, rusqlite::Error>;
-    fn get_modtime(&self, file: impl AsRef<Path>) -> Result<u64>;
+    fn get_modtime(&self, file: &Path) -> Result<u64>;
     fn vacuum(&self) -> Result<()>;
 }
 
 impl Database for Connection {
     type Conn = Connection;
-    fn new(path: Option<impl AsRef<Path>>) -> Result<Self> {
+    fn new(path: Option<&PathBuf>) -> Result<Self> {
         let conn = if let Some(file) = path {
             Connection::open(file)?
         } else if let Some(base_dir) = BaseDirs::new() {
@@ -49,11 +49,10 @@ impl Database for Connection {
         Ok(conn)
     }
 
-    fn insert_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+    fn insert_file(&self, filename: &Path) -> Result<()> {
         let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
 
         let modtime = filename
-            .as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -61,15 +60,14 @@ impl Database for Connection {
 
         self.execute(
             ADD_ITEM,
-            params![filename.as_ref().to_str().unwrap(), toencode, modtime],
+            params![filename.to_str().unwrap(), toencode, modtime],
         )?;
 
         Ok(())
     }
 
-    fn update_file(&self, filename: impl AsRef<Path>) -> Result<()> {
+    fn update_file(&self, filename: &Path) -> Result<()> {
         let modtime = filename
-            .as_ref()
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
@@ -77,21 +75,17 @@ impl Database for Connection {
 
         self.execute(
             UPDATE_ITEM,
-            params![filename.as_ref().to_str().unwrap(), false, modtime],
+            params![filename.to_str().unwrap(), false, modtime],
         )?;
 
         Ok(())
     }
 
-    fn check_file(&self, filename: impl AsRef<Path>) -> Result<bool> {
-        if self.query_one(
-            CHECK_FILE,
-            params!(filename.as_ref().to_str().unwrap()),
-            |row| {
-                let num: bool = row.get(0)?;
-                Ok(num)
-            },
-        )? {
+    fn check_file(&self, filename: &Path) -> Result<bool> {
+        if self.query_one(CHECK_FILE, params!(filename.to_str().unwrap()), |row| {
+            let num: bool = row.get(0)?;
+            Ok(num)
+        })? {
             Ok(true)
         } else {
             Ok(false)
@@ -110,8 +104,8 @@ impl Database for Connection {
         Ok(files)
     }
 
-    fn remove_file(&self, filename: impl AsRef<Path>) -> Result<()> {
-        self.execute(REMOVE_FILE, params!(filename.as_ref().to_str().unwrap()))?;
+    fn remove_file(&self, filename: &Path) -> Result<()> {
+        self.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))?;
         Ok(())
     }
 
@@ -133,15 +127,13 @@ impl Database for Connection {
         })
     }
 
-    fn get_modtime(&self, file: impl AsRef<Path>) -> Result<u64> {
-        Ok(self.query_one(
-            GET_MODTIME,
-            params![file.as_ref().to_str().unwrap()],
-            |row| {
+    fn get_modtime(&self, file: &Path) -> Result<u64> {
+        Ok(
+            self.query_one(GET_MODTIME, params![file.to_str().unwrap()], |row| {
                 let modtime: u64 = row.get(0)?;
                 Ok(modtime)
-            },
-        )?)
+            })?,
+        )
     }
 
     fn vacuum(&self) -> Result<()> {
@@ -157,7 +149,7 @@ mod tests {
 
     #[test]
     fn check_localfiles() {
-        let dbname = String::from("temp1.db");
+        let dbname = PathBuf::from("temp1.db");
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
@@ -166,7 +158,8 @@ mod tests {
         let mut counter = 0;
         let conn = Connection::new(Some(&dbname)).unwrap();
         for file in filenames {
-            conn.insert_file(&file.to_string()).unwrap();
+            let filename = PathBuf::from(file);
+            conn.insert_file(&filename).unwrap();
         }
         let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
         let mut returned = stmt.query(()).unwrap();
@@ -180,7 +173,7 @@ mod tests {
 
     #[test]
     fn check_update() {
-        let dbname = String::from("temp2.db");
+        let dbname = PathBuf::from("temp2.db");
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
@@ -188,7 +181,7 @@ mod tests {
         ];
         let conn = Connection::new(Some(&dbname)).unwrap();
         for file in filenames {
-            conn.insert_file(Path::new(file).canonicalize().unwrap())
+            conn.insert_file(&Path::new(file).canonicalize().unwrap())
                 .unwrap();
         }
 
@@ -206,14 +199,8 @@ mod tests {
         )
         .unwrap();
 
-        conn.update_file(
-            Path::new("./samples/16bit.flac")
-                .canonicalize()
-                .unwrap()
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
+        conn.update_file(&Path::new("./samples/16bit.flac").canonicalize().unwrap())
+            .unwrap();
 
         let mut stmt = conn.prepare(TOENCODE_PATHS).unwrap();
         let mut returned = stmt.query(()).unwrap();
