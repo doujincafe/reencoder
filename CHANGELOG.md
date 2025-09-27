@@ -1,3 +1,7 @@
+# v0.3.0
+* removed claxon dep in favor of flac_codec, same for metaflac
+* cleaned up code a bit
+
 # v0.2.6-fix
 * remembered about changelog.md
 * fixed incorrect encoded_by tag match

@@ -1,7 +1,9 @@
 use anyhow::{Result, anyhow};
-use claxon::{FlacReader, FlacReaderOptions};
 use flac_bound::FlacEncoder;
-use metaflac::{Block, Tag};
+use flac_codec::{
+    decode::{Metadata, verify},
+    *,
+};
 use std::{
     path::Path,
     sync::{
@@ -10,52 +12,63 @@ use std::{
     },
 };
 
-pub const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
-
+pub(crate) const CURRENT_VENDOR: &str = "reference libFLAC 1.5.0 20250211";
 const BADTAGS: [&str; 3] = ["encoded_by", "encodedby", "encoder"];
 
-fn write_tags(filename: impl AsRef<Path>) -> Result<()> {
-    let tags = Tag::read_from_path(&filename)?;
-    let temp_name = filename.as_ref().with_extension("tmp");
-    let mut output = Tag::read_from_path(&temp_name)?;
+fn encode_file(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> {
+    if verify(filename).is_err() {
+        return Err(anyhow!("corrupt file"));
+    };
 
-    for block in tags.blocks() {
-        match block {
-            Block::VorbisComment(block) => {
-                for (key, val) in block.comments.iter() {
-                    if !BADTAGS.contains(&key.to_lowercase().as_str()) {
-                        output.set_vorbis(key, val.to_owned());
-                    }
-                }
-            }
-            Block::Padding(_) => {}
-            _ => output.push_block(block.to_owned()),
-        }
-    }
-
-    output.write_to_path(temp_name)?;
-    Ok(())
-}
-
-fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<bool> {
-    let temp_name = filename.as_ref().with_extension("tmp");
+    let temp_name = filename.with_extension("tmp");
     if temp_name.exists() {
         std::fs::remove_file(&temp_name)?;
     }
-    let mut decoder = FlacReader::open(&filename)?;
-    let streaminfo = decoder.streaminfo();
 
-    let num_channels: usize = streaminfo.channels.try_into()?;
+    let mut reader = decode::FlacSampleReader::open(filename)?;
+
+    let blocklist = reader.metadata();
+
+    let streaminfo = blocklist.streaminfo();
+
+    let channels = streaminfo.channel_count() as u32;
+
+    let metadata = blocklist
+        .blocks()
+        .filter_map(|block| {
+            use metadata::Block;
+            use metadata::BlockRef::*;
+            match block {
+                SeekTable(table) => Some(Block::SeekTable(table.clone())),
+                Application(app) => Some(Block::Application(app.clone())),
+                Cuesheet(sheet) => Some(Block::Cuesheet(sheet.clone())),
+                Picture(picture) => Some(Block::Picture(picture.clone())),
+                VorbisComment(comments) => {
+                    let mut cloned = comments.clone();
+                    for tag in BADTAGS {
+                        cloned.remove(tag);
+                    }
+                    cloned.vendor_string = CURRENT_VENDOR.to_string();
+                    Some(Block::VorbisComment(cloned))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<metadata::Block>>();
 
     let mut encoder = if let Some(encoder) = FlacEncoder::new() {
-        if let Ok(encoder) = encoder
-            .channels(streaminfo.channels)
-            .bits_per_sample(streaminfo.bits_per_sample)
-            .sample_rate(streaminfo.sample_rate)
-            .compression_level(8)
-            .verify(false)
-            .init_file(&temp_name)
-        {
+        if let Ok(encoder) = {
+            let mut encoder = encoder
+                .channels(streaminfo.channel_count() as u32)
+                .bits_per_sample(streaminfo.bits_per_sample())
+                .sample_rate(streaminfo.sample_rate())
+                .compression_level(8)
+                .verify(false);
+            if let Some(size) = reader.total_samples() {
+                encoder = encoder.total_samples_estimate(size)
+            }
+            encoder.init_file(&temp_name)
+        } {
             encoder
         } else {
             return Err(anyhow!("failed to create encoder"));
@@ -64,28 +77,26 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
         return Err(anyhow!("failed to create encoder"));
     };
 
-    let mut frame_reader = decoder.blocks();
-    let mut buffer = Vec::new();
-    let mut block_buffer = Vec::with_capacity(streaminfo.max_block_size as usize * num_channels);
-
     while handler.load(Ordering::SeqCst) {
-        match frame_reader.read_next_or_eof(block_buffer) {
-            Ok(Some(block)) => {
-                for ch in 0..block.channels() {
-                    buffer.push(block.channel(ch));
-                }
+        match reader.fill_buf() {
+            Ok(buf) => {
+                if !buf.is_empty() {
+                    let length = buf.len();
+                    if encoder
+                        .process_interleaved(buf, length as u32 / channels)
+                        .is_err()
+                    {
+                        return Err(anyhow!(
+                            "Error while processing samples:\t{:?}",
+                            encoder.state()
+                        ));
+                    };
 
-                if encoder.process(&buffer).is_err() {
-                    return Err(anyhow!(
-                        "Error while processing samples:\t{:?}",
-                        encoder.state()
-                    ));
-                };
-                buffer.clear();
-                buffer = buffer.into_iter().map(|_| unreachable!()).collect();
-                block_buffer = block.into_buffer();
+                    reader.consume(length);
+                } else {
+                    break;
+                }
             }
-            Ok(None) => break,
             Err(error) => return Err(error.into()),
         }
     }
@@ -99,32 +110,51 @@ fn encode_file(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<b
     if let Err(enc) = encoder.finish() {
         return Err(anyhow!("Encoding failed:\t{:?}", enc.state()));
     }
-    write_tags(&filename)?;
-    std::fs::rename(temp_name, filename)?;
+
+    metadata::update(&temp_name, |blocklist| {
+        for block in metadata {
+            use metadata::Block::*;
+            match block {
+                Application(b) => {
+                    let _ = blocklist.insert(b);
+                }
+                Picture(b) => {
+                    let _ = blocklist.insert(b);
+                }
+                VorbisComment(b) => {
+                    let _ = blocklist.insert(b);
+                }
+                Cuesheet(b) => {
+                    let _ = blocklist.insert(b);
+                }
+                SeekTable(b) => {
+                    let _ = blocklist.insert(b);
+                }
+                _ => {}
+            }
+        }
+        Ok::<(), flac_codec::Error>(())
+    })?;
+
+    std::fs::rename(&temp_name, filename)?;
+
     Ok(false)
 }
 
-pub fn handle_encode(filename: impl AsRef<Path>, handler: Arc<AtomicBool>) -> Result<bool> {
-    match encode_file(&filename, handler) {
+pub fn handle_encode(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> {
+    match encode_file(filename, handler) {
         Err(error) => {
-            let _ = std::fs::remove_file(filename.as_ref().with_extension("tmp"));
+            let _ = std::fs::remove_file(filename.with_extension("tmp"));
             Err(error)
         }
         Ok(res) => Ok(res),
     }
 }
 
-pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {
-    if let Some(vendor) = FlacReader::open_ext(
-        file,
-        FlacReaderOptions {
-            metadata_only: true,
-            read_vorbis_comment: true,
-        },
-    )?
-    .vendor()
-    {
-        Ok(vendor.to_string())
+pub fn get_vendor(file: &Path) -> Result<String> {
+    let blocklist = metadata::BlockList::open(file)?;
+    if let Some(data) = blocklist.get::<metadata::VorbisComment>() {
+        Ok(data.vendor_string.to_owned())
     } else {
         Err(anyhow!("Vendor string not found"))
     }
@@ -133,17 +163,18 @@ pub fn get_vendor(file: impl AsRef<Path>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn bit16() {
-        let name = "./samples/16bit.flac";
-        let tempname = "./samples/16bit.flac.temp";
-        std::fs::copy(name, tempname).unwrap();
+        let name = PathBuf::from("./samples/16bit.flac");
+        let tempname = PathBuf::from("./samples/16bit.flac.temp");
+        std::fs::copy(&name, &tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
-        encode_file(name, handler).unwrap();
+        encode_file(&name, handler).unwrap();
         let output = std::process::Command::new("flac")
             .arg("-wts")
-            .arg(name)
+            .arg(&name)
             .status();
         std::fs::rename(tempname, name).unwrap();
         assert!(output.unwrap().success());
@@ -151,14 +182,14 @@ mod tests {
 
     #[test]
     fn bit24() {
-        let name = "./samples/24bit.flac";
-        let tempname = "./samples/24bit.flac.temp";
-        std::fs::copy(name, tempname).unwrap();
+        let name = PathBuf::from("./samples/24bit.flac");
+        let tempname = PathBuf::from("./samples/24bit.flac.temp");
+        std::fs::copy(&name, &tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
-        encode_file(name, handler).unwrap();
+        encode_file(&name, handler).unwrap();
         let output = std::process::Command::new("flac")
             .arg("-wts")
-            .arg(name)
+            .arg(&name)
             .status();
         std::fs::rename(tempname, name).unwrap();
         assert!(output.unwrap().success());
@@ -166,14 +197,14 @@ mod tests {
 
     #[test]
     fn bit32() {
-        let name = "./samples/32bit.flac";
-        let tempname = "./samples/32bit.flac.temp";
-        std::fs::copy(name, tempname).unwrap();
+        let name = PathBuf::from("./samples/32bit.flac");
+        let tempname = PathBuf::from("./samples/32bit.flac.temp");
+        std::fs::copy(&name, &tempname).unwrap();
         let handler = Arc::new(AtomicBool::new(true));
-        encode_file(name, handler).unwrap();
+        encode_file(&name, handler).unwrap();
         let output = std::process::Command::new("flac")
             .arg("-wts")
-            .arg(name)
+            .arg(&name)
             .status();
         std::fs::rename(tempname, name).unwrap();
         assert!(output.unwrap().success());

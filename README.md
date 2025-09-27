@@ -2,7 +2,6 @@
 
 scans a specified folder and reencodes flacs if they needed to be reencoded
 
-currently this project uses [my own hacky fork of claxon](https://github.com/justjakka/claxon)
 ```
 Usage: reencoder [OPTIONS] [path]
 

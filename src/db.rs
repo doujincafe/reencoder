@@ -88,9 +88,6 @@ async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Erro
     while let Ok(Some(row)) = rows.next().await {
         let path = row.get::<String>(0)?;
         files.push(PathBuf::from(path));
-    }
-    Ok(files)
-}
 
 async fn remove_file(conn: &Connection, filename: &Path) -> Result<()> {
     conn.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))
@@ -104,9 +101,6 @@ async fn get_toencode_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Er
     while let Ok(Some(row)) = rows.next().await {
         let path = row.get::<String>(0)?;
         files.push(PathBuf::from(path));
-    }
-    Ok(files)
-}
 
 async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
     Ok(conn
@@ -133,6 +127,7 @@ async fn vacuum(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+
 #[cfg(test)]
 mod tests {
 
@@ -157,7 +152,6 @@ mod tests {
                 insert_file(&conn, &path).await.unwrap();
             }
             let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
-
             while let Ok(Some(_)) = returned.next().await {
                 counter += 1
             }
@@ -183,7 +177,6 @@ mod tests {
                     .await
                     .unwrap();
             }
-
             conn.execute(
                 UPDATE_FILE,
                 params![

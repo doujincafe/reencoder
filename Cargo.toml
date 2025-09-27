@@ -1,11 +1,11 @@
 [package]
 name = "flac-reencoder"
-version = "0.2.7"
+version = "0.3.0"
 edition = "2024"
-repository = "https://github.com/justjakka/reencoder/"
+repository = "https://github.com/doujincafe/reencoder/"
 license = "BSD-3-Clause"
 authors = ["jakka"]
-description = "A tool for keeping your flacs up-to-date"
+description = "tool to keep your flacs reencoded"
 categories = ["command-line-utilities"]
 keywords = ["flac", "audio"]
 
