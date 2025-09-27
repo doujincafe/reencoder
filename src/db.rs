@@ -50,7 +50,7 @@ impl Database for Connection {
     }
 
     fn insert_file(&self, filename: &Path) -> Result<()> {
-        let toencode = !matches!(get_vendor(&filename)?.as_str(), CURRENT_VENDOR);
+        let toencode = !matches!(get_vendor(filename)?.as_str(), CURRENT_VENDOR);
 
         let modtime = filename
             .metadata()?
