@@ -1,11 +1,10 @@
-mod db;
-mod files;
-mod flac;
+pub(crate) mod db;
+pub(crate) mod files;
+pub(crate) mod flac;
 use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
 use console::style;
-use rusqlite::Connection;
 use std::{
     path::PathBuf,
     sync::{
@@ -13,8 +12,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-
-use crate::db::Database;
 
 fn build_cli() -> Command {
     command!()
@@ -93,30 +90,36 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let conn = Connection::new(args.get_one::<PathBuf>("db"))?;
+    smol::block_on(async move {
+        let path = if let Some(path) = args.get_one::<PathBuf>("db") {
+            Some(path.as_path())
+        } else {
+            None
+        };
+        let db = db::init_db(path).await?;
 
-    let path = args.get_one::<PathBuf>("path");
+        if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
+            let count = db::get_toencode_number(&db.connect()?).await?;
+            println!("Files to reencode:\t{}", style(count).green());
+            return Ok(());
+        }
 
-    if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-        let count = conn.get_toencode_number()?;
-        println!("Files to reencode:\t{}", style(count).green());
-        return Ok(());
-    }
+        if let Some(realpath) = path {
+            let hanlder = running.clone();
+            files::index_files_recursively(realpath, &db.connect()?, hanlder)?;
+        }
 
-    if let Some(realpath) = path {
-        let hanlder = running.clone();
-        files::index_files_recursively(realpath, &conn, hanlder)?;
-    }
+        if args.get_flag("clean") {
+            let handler = running.clone();
+            files::clean_files(&db.connect()?, handler)?;
+        }
 
-    if args.get_flag("clean") {
-        let handler = running.clone();
-        files::clean_files(&conn, handler)?;
-    }
+        if args.get_flag("doit") {
+            let hanlder = running.clone();
+            let threads = *args.get_one::<usize>("threads").unwrap();
+            files::reencode_files(db.connect()?, hanlder, threads).await?;
+        }
 
-    if args.get_flag("doit") {
-        let hanlder = running.clone();
-        let threads = *args.get_one::<usize>("threads").unwrap();
-        files::reencode_files(conn, hanlder, threads)?;
-    }
-    Ok::<(), anyhow::Error>(())
+        Ok::<(), anyhow::Error>(())
+    })
 }

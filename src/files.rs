@@ -1,7 +1,8 @@
+use crate::db;
+use crate::flac::handle_encode;
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rusqlite::Connection;
 use std::{
     error::Error,
     fmt::Display,
@@ -13,9 +14,8 @@ use std::{
     thread::{self, sleep},
     time::{Duration, UNIX_EPOCH},
 };
+use turso::Connection;
 use walkdir::WalkDir;
-
-use crate::{db::Database, flac::handle_encode};
 
 #[cfg(not(test))]
 const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
@@ -50,21 +50,21 @@ impl Display for FileError {
 
 impl Error for FileError {}
 
-fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
-    if conn.check_file(file)? {
+async fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
+    if db::check_file(conn, file).await? {
         let modtime = file
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
             .as_secs();
-        let db_modtime = conn.get_modtime(file)?;
+        let db_modtime = db::get_modtime(conn, file).await?;
         if modtime != db_modtime {
-            conn.update_file(file)?;
+            db::update_file(conn, file).await?;
         }
         return Ok(());
     }
 
-    conn.insert_file(file)?;
+    db::insert_file(conn, file).await?;
 
     Ok(())
 }
@@ -106,7 +106,7 @@ pub fn index_files_recursively(
                 continue;
             }
             if path.extension().is_some_and(|x| x == "flac") {
-                if let Err(error) = handle_file(&path, conn) {
+                if let Err(error) = smol::block_on(async { handle_file(&path, conn).await }) {
                     eprintln!("{}", FileError::new(&path, error));
                 } else {
                     #[cfg(not(test))]
@@ -129,16 +129,20 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize) -> Result<()> {
+pub async fn reencode_files(
+    conn: Connection,
+    handler: Arc<AtomicBool>,
+    threads: usize,
+) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
-        Some(conn.get_toencode_number()?),
+        Some(db::get_toencode_number(&conn).await?),
         ProgressDrawTarget::stdout_with_hz(60),
     )
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    let mut files = conn.get_toencode_files()?.into_iter();
+    let mut files = db::get_toencode_files(&conn).await?.into_iter();
 
     let lock = Arc::new(Mutex::new(conn));
 
@@ -166,11 +170,11 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
             let bar = bar.clone();
             let thread_counter = thread_counter.clone();
 
-            s.spawn(move || {
+            s.spawn(async move || {
                 match handle_encode(&file, handler) {
                     Err(error) => eprintln!("{}", FileError::new(&file, error)),
                     Ok(false) => {
-                        if let Err(error) = lock.lock().unwrap().update_file(&file) {
+                        if let Err(error) = db::update_file(&lock.lock().unwrap(), &file).await {
                             eprintln!("{}", FileError::new(&file, error));
                         }
                         #[cfg(not(test))]

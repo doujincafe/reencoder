@@ -19,7 +19,7 @@ const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
-async fn init_db(path: Option<&Path>) -> Result<turso::Database> {
+pub(crate) async fn init_db(path: Option<&Path>) -> Result<turso::Database> {
     let db = if let Some(file) = path {
         turso::Builder::new_local(file.to_str().unwrap())
             .build()
@@ -37,7 +37,7 @@ async fn init_db(path: Option<&Path>) -> Result<turso::Database> {
     Ok(db)
 }
 
-async fn insert_file(conn: &Connection, filename: &Path) -> Result<()> {
+pub(crate) async fn insert_file(conn: &Connection, filename: &Path) -> Result<()> {
     let toencode = !matches!(get_vendor(filename)?.as_str(), CURRENT_VENDOR);
 
     let modtime = filename
@@ -55,7 +55,7 @@ async fn insert_file(conn: &Connection, filename: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn update_file(conn: &Connection, filename: &Path) -> Result<()> {
+pub(crate) async fn update_file(conn: &Connection, filename: &Path) -> Result<()> {
     let modtime = filename
         .metadata()?
         .modified()?
@@ -71,7 +71,7 @@ async fn update_file(conn: &Connection, filename: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
+pub(crate) async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
     Ok(conn
         .query(CHECK_FILE, params!(filename.to_str().unwrap()))
         .await?
@@ -81,28 +81,36 @@ async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
         .get::<bool>(0)?)
 }
 
-async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
+pub(crate) async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
     conn.execute(DEDUPE_DB, ()).await?;
     let mut rows = conn.query(FETCH_FILES, ()).await?;
     let mut files = Vec::new();
     while let Ok(Some(row)) = rows.next().await {
-        let path = row.get::<String>(0)?;
+        let path: String = row.get(0)?;
         files.push(PathBuf::from(path));
+    }
 
-async fn remove_file(conn: &Connection, filename: &Path) -> Result<()> {
+    Ok(files)
+}
+
+pub(crate) async fn remove_file(conn: &Connection, filename: &Path) -> Result<()> {
     conn.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))
         .await?;
     Ok(())
 }
 
-async fn get_toencode_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
+pub(crate) async fn get_toencode_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
     let mut rows = conn.query(TOENCODE_PATHS, ()).await?;
     let mut files: Vec<PathBuf> = Vec::new();
     while let Ok(Some(row)) = rows.next().await {
-        let path = row.get::<String>(0)?;
+        let path: String = row.get(0)?;
         files.push(PathBuf::from(path));
+    }
 
-async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
+    Ok(files)
+}
+
+pub(crate) async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
     Ok(conn
         .query(TOENCODE_NUMBER, ())
         .await?
@@ -112,7 +120,7 @@ async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
         .get::<u64>(0)?)
 }
 
-async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
+pub(crate) async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
     Ok(conn
         .query(GET_MODTIME, params![file.to_str().unwrap()])
         .await?
@@ -122,11 +130,10 @@ async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
         .get::<u64>(0)?)
 }
 
-async fn vacuum(conn: &Connection) -> Result<()> {
+pub(crate) async fn vacuum(conn: &Connection) -> Result<()> {
     conn.execute("VACUUM", ()).await?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
