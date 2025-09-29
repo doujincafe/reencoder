@@ -91,11 +91,7 @@ fn main() -> Result<()> {
     })?;
 
     smol::block_on(async move {
-        let path = if let Some(path) = args.get_one::<PathBuf>("db") {
-            Some(path.as_path())
-        } else {
-            None
-        };
+        let path = args.get_one::<PathBuf>("db");
         let db = db::init_db(path).await?;
 
         if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
@@ -111,13 +107,13 @@ fn main() -> Result<()> {
 
         if args.get_flag("clean") {
             let handler = running.clone();
-            files::clean_files(&db.connect()?, handler)?;
+            files::clean_files(&db.connect()?, handler).await?;
         }
 
         if args.get_flag("doit") {
             let hanlder = running.clone();
             let threads = *args.get_one::<usize>("threads").unwrap();
-            files::reencode_files(db.connect()?, hanlder, threads).await?;
+            files::reencode_files(&db.connect()?, hanlder, threads).await?;
         }
 
         Ok::<(), anyhow::Error>(())

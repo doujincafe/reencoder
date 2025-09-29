@@ -19,7 +19,7 @@ const DEDUPE_DB: &str =
     "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
-pub(crate) async fn init_db(path: Option<&Path>) -> Result<turso::Database> {
+pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
     let db = if let Some(file) = path {
         turso::Builder::new_local(file.to_str().unwrap())
             .build()
@@ -111,13 +111,12 @@ pub(crate) async fn get_toencode_files(conn: &Connection) -> Result<Vec<PathBuf>
 }
 
 pub(crate) async fn get_toencode_number(conn: &Connection) -> Result<u64, turso::Error> {
-    Ok(conn
-        .query(TOENCODE_NUMBER, ())
+    conn.query(TOENCODE_NUMBER, ())
         .await?
         .next()
         .await?
         .unwrap()
-        .get::<u64>(0)?)
+        .get::<u64>(0)
 }
 
 pub(crate) async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
@@ -213,6 +212,7 @@ mod tests {
             }
             std::fs::remove_file(dbname).unwrap();
             assert!(counter == 0)
-        });
+        })
+        .await;
     }
 }
