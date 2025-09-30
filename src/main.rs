@@ -5,7 +5,6 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, Command, ValueHint, command, value_parser};
 use clap_complete::{Generator, Shell, generate};
 use console::style;
-use rusqlite::Connection;
 use std::{
     path::PathBuf,
     sync::{
@@ -13,8 +12,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-
-use crate::db::Database;
 
 fn build_cli() -> Command {
     command!()
@@ -93,12 +90,12 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let conn = Connection::new(args.get_one::<PathBuf>("db"))?;
+    let conn = db::init_connection(args.get_one::<PathBuf>("db"))?;
 
     let path = args.get_one::<PathBuf>("path");
 
     if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-        let count = conn.get_toencode_number()?;
+        let count = db::get_toencode_number(&conn)?;
         println!("Files to reencode:\t{}", style(count).green());
         return Ok(());
     }

@@ -1,3 +1,5 @@
+use crate::db;
+use crate::flac::handle_encode;
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -14,8 +16,6 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
-
-use crate::{db::Database, flac::handle_encode};
 
 #[cfg(not(test))]
 const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} {pos:>7}/{len:7}";
@@ -51,25 +51,25 @@ impl Display for FileError {
 impl Error for FileError {}
 
 fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
-    if conn.check_file(file)? {
+    if db::check_file(conn, file)? {
         let modtime = file
             .metadata()?
             .modified()?
             .duration_since(UNIX_EPOCH)?
             .as_secs();
-        let db_modtime = conn.get_modtime(file)?;
+        let db_modtime = db::get_modtime(conn, file)?;
         if modtime != db_modtime {
-            conn.update_file(file)?;
+            db::update_file(conn, file)?;
         }
         return Ok(());
     }
 
-    conn.insert_file(file)?;
+    db::insert_file(conn, file)?;
 
     Ok(())
 }
 
-pub fn index_files_recursively(
+pub(crate) fn index_files_recursively(
     path: &Path,
     conn: &Connection,
     handler: Arc<AtomicBool>,
@@ -129,16 +129,20 @@ pub fn index_files_recursively(
     Ok(())
 }
 
-pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize) -> Result<()> {
+pub(crate) fn reencode_files(
+    conn: Connection,
+    handler: Arc<AtomicBool>,
+    threads: usize,
+) -> Result<()> {
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
-        Some(conn.get_toencode_number()?),
+        Some(db::get_toencode_number(&conn)?),
         ProgressDrawTarget::stdout_with_hz(60),
     )
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
 
-    let mut files = conn.get_toencode_files()?.into_iter();
+    let mut files = db::get_toencode_files(&conn)?.into_iter();
 
     let lock = Arc::new(Mutex::new(conn));
 
@@ -170,7 +174,7 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
                 match handle_encode(&file, handler) {
                     Err(error) => eprintln!("{}", FileError::new(&file, error)),
                     Ok(false) => {
-                        if let Err(error) = lock.lock().unwrap().update_file(&file) {
+                        if let Err(error) = db::update_file(&lock.lock().unwrap(), &file) {
                             eprintln!("{}", FileError::new(&file, error));
                         }
                         #[cfg(not(test))]
@@ -194,8 +198,8 @@ pub fn reencode_files(conn: Connection, handler: Arc<AtomicBool>, threads: usize
     Ok(())
 }
 
-pub fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
-    let files = conn.init_clean_files()?;
+pub(crate) fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
+    let files = db::init_clean_files(conn)?;
 
     #[cfg(not(test))]
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
@@ -206,7 +210,7 @@ pub fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
     files.iter().for_each(|file| {
         #[allow(clippy::collapsible_if)]
         if handler.load(Ordering::SeqCst) && !file.exists() {
-            if let Err(error) = conn.remove_file(file) {
+            if let Err(error) = db::remove_file(conn, file) {
                 eprintln!("{}", FileError::new(file, error))
             };
             #[cfg(not(test))]
@@ -216,7 +220,7 @@ pub fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
     #[cfg(not(test))]
     spinner.finish();
 
-    conn.vacuum()?;
+    db::vacuum(conn)?;
 
     Ok(())
 }
@@ -229,7 +233,7 @@ mod tests {
     fn test_index_lots_of_files() {
         let dbname = PathBuf::from("temp3.db");
         let handler = Arc::new(AtomicBool::new(true));
-        let conn = Connection::new(Some(&dbname)).unwrap();
+        let conn = db::init_connection(Some(&dbname)).unwrap();
         index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
         std::fs::remove_file(dbname).unwrap();
     }
@@ -238,7 +242,7 @@ mod tests {
     fn test_clean_files() {
         let dbname = PathBuf::from("temp4.db");
         let handler = Arc::new(AtomicBool::new(true));
-        let conn = Connection::new(Some(&dbname)).unwrap();
+        let conn = db::init_connection(Some(&dbname)).unwrap();
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
@@ -248,13 +252,13 @@ mod tests {
         std::fs::copy("./samples/32bit.flac", "./samples/nonexisting.flac").unwrap();
         for file in filenames {
             let filename = PathBuf::from(file);
-            conn.insert_file(&filename).unwrap();
+            db::insert_file(&conn, &filename).unwrap();
         }
 
         std::fs::remove_file("./samples/nonexisting.flac").unwrap();
 
         clean_files(&conn, handler).unwrap();
-        let counter = conn.init_clean_files().unwrap().len();
+        let counter = db::init_clean_files(&conn).unwrap().len();
         std::fs::remove_file(dbname).unwrap();
         assert!(counter == 3)
     }
@@ -263,13 +267,13 @@ mod tests {
     fn test_reencode_lots_of_files() {
         let dbname = PathBuf::from("temp5.db");
         let handler = Arc::new(AtomicBool::new(true));
-        let conn = Connection::new(Some(&dbname)).unwrap();
+        let conn = db::init_connection(Some(&dbname)).unwrap();
         let temp = handler.clone();
         index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
-        println!("\n{}", conn.get_toencode_number().unwrap());
+        println!("\n{}", db::get_toencode_number(&conn).unwrap());
         reencode_files(conn, handler, 4).unwrap();
-        let conn = Connection::new(Some(&dbname)).unwrap();
-        println!("\n{}", conn.get_toencode_number().unwrap());
+        let conn = db::init_connection(Some(&dbname)).unwrap();
+        println!("\n{}", db::get_toencode_number(&conn).unwrap());
         std::fs::remove_file(dbname).unwrap();
     }
 }
