@@ -92,6 +92,7 @@ pub(crate) fn index_files_recursively(
 
         let newhandler = handler.clone();
 
+        #[allow(unused_variables)]
         s.spawn(move || {
             for entry in WalkDir::new(&abspath) {
                 if newhandler.load(Ordering::SeqCst) {
@@ -118,6 +119,7 @@ pub(crate) fn index_files_recursively(
         while let Ok(path) = filerecv.recv()
             && handler.load(Ordering::SeqCst)
         {
+            #[allow(unused_variables)]
             if let Err(error) = handle_file(&path, conn) {
                 #[cfg(not(test))]
                 bar.println(format!("{}", FileError::new(&path, error)));
