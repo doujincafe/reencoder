@@ -10,6 +10,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     },
     thread::{self, sleep},
     time::{Duration, UNIX_EPOCH},
@@ -69,7 +70,7 @@ async fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn index_files_recursively(
+pub(crate) async fn index_files_recursively(
     path: &Path,
     conn: &Connection,
     handler: Arc<AtomicBool>,
@@ -83,40 +84,51 @@ pub fn index_files_recursively(
     let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
+    thread::scope(|s| {
+        let (filesend, filerecv) = mpsc::channel();
 
-    for entry in WalkDir::new(&abspath) {
-        if handler.load(Ordering::SeqCst) {
-            let path = entry?.into_path();
-            if !path.is_file() {
-                continue;
-            }
-            if path.extension().is_some_and(|x| x == "flac") {
-                #[cfg(not(test))]
-                bar.inc_length(1);
-            }
-        } else {
-            break;
-        }
-    }
+        #[cfg(not(test))]
+        let newbar = bar.clone();
 
-    for entry in WalkDir::new(abspath) {
-        if handler.load(Ordering::SeqCst) {
-            let path = entry.unwrap().into_path();
-            if !path.is_file() {
-                continue;
-            }
-            if path.extension().is_some_and(|x| x == "flac") {
-                if let Err(error) = smol::block_on(async { handle_file(&path, conn).await }) {
-                    eprintln!("{}", FileError::new(&path, error));
+        let newhandler = handler.clone();
+
+        let newhandler = handler.clone();
+
+        #[allow(unused_variables)]
+        s.spawn(move || {
+            for entry in WalkDir::new(&abspath) {
+                if newhandler.load(Ordering::SeqCst) {
+                    if let Err(error) = entry {
+                        #[cfg(not(test))]
+                        newbar.println(format!("{}", error));
+                    } else {
+                        let path = entry.unwrap().into_path();
+                        if !path.is_file() {
+                            continue;
+                        }
+                        if path.extension().is_some_and(|x| x == "flac") {
+                            let _ = filesend.send(path.to_owned());
+                            #[cfg(not(test))]
+                            newbar.inc_length(1);
                 } else {
-                    #[cfg(not(test))]
-                    bar.inc(1);
+                    break;
                 }
             }
-        } else {
-            break;
+        });
+
+        while let Ok(path) = filerecv.recv()
+            && handler.load(Ordering::SeqCst)
+        {
+            #[allow(unused_variables)]
+            if let Err(error) = smol::block_on( async {handle_file(&path, conn)}).await {
+                #[cfg(not(test))]
+                bar.println(format!("{}", FileError::new(&path, error)));
+            } else {
+                #[cfg(not(test))]
+                bar.inc(1);
+            }
         }
-    }
+    });
 
     #[cfg(not(test))]
     {

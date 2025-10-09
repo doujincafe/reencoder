@@ -141,7 +141,7 @@ fn encode_file(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> {
     Ok(false)
 }
 
-pub fn handle_encode(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> {
+pub(crate) fn handle_encode(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> {
     match encode_file(filename, handler) {
         Err(error) => {
             let _ = std::fs::remove_file(filename.with_extension("tmp"));
@@ -151,7 +151,7 @@ pub fn handle_encode(filename: &Path, handler: Arc<AtomicBool>) -> Result<bool> 
     }
 }
 
-pub fn get_vendor(file: &Path) -> Result<String> {
+pub(crate) fn get_vendor(file: &Path) -> Result<String> {
     let blocklist = metadata::BlockList::open(file)?;
     if let Some(data) = blocklist.get::<metadata::VorbisComment>() {
         Ok(data.vendor_string.to_owned())
