@@ -119,7 +119,7 @@ pub async fn index_files_recursively(
         && handler.load(Ordering::SeqCst)
     {
         #[allow(unused_variables)]
-        if let Err(error) = smol::block_on(async { handle_file(&path, conn) }).await {
+        if let Err(error) = smol::block_on(async { handle_file(&path, conn).await }) {
             #[cfg(not(test))]
             bar.println(format!("{}", FileError::new(&path, error)));
         } else {

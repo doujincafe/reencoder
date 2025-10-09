@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 
         if let Some(realpath) = path {
             let hanlder = running.clone();
-            files::index_files_recursively(realpath, &db.connect()?, hanlder)?;
+            files::index_files_recursively(realpath, &db.connect()?, hanlder).await?;
         }
 
         if args.get_flag("clean") {
