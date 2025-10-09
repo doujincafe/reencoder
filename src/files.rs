@@ -84,53 +84,49 @@ pub async fn index_files_recursively(
     let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
-    thread::scope(|s| {
-        let (filesend, filerecv) = mpsc::channel();
+    let (filesend, filerecv) = mpsc::channel();
 
-        #[cfg(not(test))]
-        let newbar = bar.clone();
+    #[cfg(not(test))]
+    let newbar = bar.clone();
 
-        let newhandler = handler.clone();
+    let newhandler = handler.clone();
 
-        let newhandler = handler.clone();
-
-        #[allow(unused_variables)]
-        s.spawn(move || {
-            for entry in WalkDir::new(&abspath) {
-                if newhandler.load(Ordering::SeqCst) {
-                    if let Err(error) = entry {
+    #[allow(unused_variables)]
+    thread::spawn(move || {
+        for entry in WalkDir::new(&abspath) {
+            if newhandler.load(Ordering::SeqCst) {
+                if let Err(error) = entry {
+                    #[cfg(not(test))]
+                    newbar.println(format!("{}", error));
+                } else {
+                    let path = entry.unwrap().into_path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    if path.extension().is_some_and(|x| x == "flac") {
+                        let _ = filesend.send(path.to_owned());
                         #[cfg(not(test))]
-                        newbar.println(format!("{}", error));
+                        newbar.inc_length(1);
                     } else {
-                        let path = entry.unwrap().into_path();
-                        if !path.is_file() {
-                            continue;
-                        }
-                        if path.extension().is_some_and(|x| x == "flac") {
-                            let _ = filesend.send(path.to_owned());
-                            #[cfg(not(test))]
-                            newbar.inc_length(1);
-                        } else {
-                            break;
-                        }
+                        break;
                     }
                 }
             }
-        });
-
-        while let Ok(path) = filerecv.recv()
-            && handler.load(Ordering::SeqCst)
-        {
-            #[allow(unused_variables)]
-            if let Err(error) = smol::block_on(async { handle_file(&path, conn) }).await {
-                #[cfg(not(test))]
-                bar.println(format!("{}", FileError::new(&path, error)));
-            } else {
-                #[cfg(not(test))]
-                bar.inc(1);
-            }
         }
     });
+
+    while let Ok(path) = filerecv.recv()
+        && handler.load(Ordering::SeqCst)
+    {
+        #[allow(unused_variables)]
+        if let Err(error) = smol::block_on(async { handle_file(&path, conn) }).await {
+            #[cfg(not(test))]
+            bar.println(format!("{}", FileError::new(&path, error)));
+        } else {
+            #[cfg(not(test))]
+            bar.inc(1);
+        }
+    }
 
     #[cfg(not(test))]
     {
@@ -255,7 +251,9 @@ mod tests {
         ex.spawn(async {
             let db = db::init_db(Some(&dbname)).await.unwrap();
             let conn = db.connect().unwrap();
-            index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn, handler)
+                .await
+                .unwrap();
             std::fs::remove_file(dbname).unwrap();
         })
         .await
@@ -298,7 +296,9 @@ mod tests {
             let db = db::init_db(Some(&dbname)).await.unwrap();
             let conn = db.connect().unwrap();
             let temp = handler.clone();
-            index_files_recursively(Path::new("./testfiles"), &conn, temp).unwrap();
+            index_files_recursively(Path::new("./testfiles"), &conn, temp)
+                .await
+                .unwrap();
             println!("\n{}", db::get_toencode_number(&conn).await.unwrap());
             reencode_files(&conn, handler, 4).await.unwrap();
             println!("\n{}", db::get_toencode_number(&conn).await.unwrap());
