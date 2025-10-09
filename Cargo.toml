@@ -22,7 +22,7 @@ rusqlite = { version = "0.37.0", default-features = false, features = [
   "modern_sqlite",
 ] }
 ctrlc = "3.4.7"
-flac-codec = { version = "1.2.0", features = ["rayon"] }
+flac-codec = { version = "1.2.0" }
 
 [features]
 default = ["bundled"]
