@@ -70,7 +70,7 @@ async fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn index_files_recursively(
+pub async fn index_files_recursively(
     path: &Path,
     conn: &Connection,
     handler: Arc<AtomicBool>,
@@ -110,8 +110,10 @@ pub(crate) async fn index_files_recursively(
                             let _ = filesend.send(path.to_owned());
                             #[cfg(not(test))]
                             newbar.inc_length(1);
-                } else {
-                    break;
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -120,7 +122,7 @@ pub(crate) async fn index_files_recursively(
             && handler.load(Ordering::SeqCst)
         {
             #[allow(unused_variables)]
-            if let Err(error) = smol::block_on( async {handle_file(&path, conn)}).await {
+            if let Err(error) = smol::block_on(async { handle_file(&path, conn) }).await {
                 #[cfg(not(test))]
                 bar.println(format!("{}", FileError::new(&path, error)));
             } else {
