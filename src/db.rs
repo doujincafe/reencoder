@@ -8,7 +8,8 @@ use std::{
 use tokio::fs;
 use turso::{Connection, params, transaction::Transaction};
 
-const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
+const TABLE_CREATE: &str =
+    "CREATE TABLE flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
 const ADD_FILE: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
 const UPDATE_FILE: &str = "UPDATE flacs SET toencode = ?2, modtime = ?3 WHERE path = ?1";
 const TOENCODE_PATHS: &str = "SELECT path FROM flacs WHERE toencode";
@@ -20,7 +21,7 @@ const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
 pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
     let db = if let Some(file) = path {
-        turso::Builder::new_local(file.canonicalize()?.to_str().unwrap())
+        turso::Builder::new_local(file.to_str().unwrap())
             .build()
             .await?
     } else if let Some(base_dir) = BaseDirs::new() {
@@ -31,8 +32,10 @@ pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
     } else {
         return Err(anyhow!("Failed to locate data directory"));
     };
-    let conn = db.connect()?;
-    conn.execute(TABLE_CREATE, ()).await?;
+    let mut conn = db.connect()?;
+    let tx = Transaction::new(&mut conn, turso::transaction::TransactionBehavior::Deferred).await?;
+    tx.execute(TABLE_CREATE, ()).await?;
+    tx.commit().await?;
     Ok(db)
 }
 
@@ -74,8 +77,8 @@ pub(crate) async fn update_file<'a>(tx: Transaction<'a>, filename: &Path) -> Res
     Ok(())
 }
 
-pub(crate) async fn check_file<'a>(tx: &Transaction<'a>, filename: &Path) -> Result<bool> {
-    Ok(tx
+pub(crate) async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
+    Ok(conn
         .query(CHECK_FILE, params!(filename.to_str().unwrap()))
         .await?
         .next()
@@ -122,8 +125,8 @@ pub(crate) async fn get_toencode_number(conn: &Connection) -> Result<u64, turso:
         .get::<u64>(0)
 }
 
-pub(crate) async fn get_modtime<'a>(tx: &Transaction<'a>, file: &Path) -> Result<u64> {
-    Ok(tx
+pub(crate) async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
+    Ok(conn
         .query(GET_MODTIME, params![file.to_str().unwrap()])
         .await?
         .next()

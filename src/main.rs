@@ -91,8 +91,10 @@ fn main() -> Result<()> {
     })?;
     let runtime = tokio::runtime::Builder::new_multi_thread().build()?;
 
-    let path = args.get_one::<PathBuf>("db");
-    let db = runtime.block_on(async { db::init_db(path).await })?;
+    let dbpath = args.get_one::<PathBuf>("db");
+    let db = runtime.block_on(async { db::init_db(dbpath).await })?;
+
+    let path = args.get_one::<PathBuf>("path");
 
     if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
         let count = runtime.block_on(async { db::get_toencode_number(&db.connect()?).await })?;
