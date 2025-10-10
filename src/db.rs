@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
+use tokio::fs;
 use turso::{Connection, params, transaction::Transaction};
 
 const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
@@ -38,8 +39,8 @@ pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
 pub(crate) async fn insert_file<'a>(tx: Transaction<'a>, filename: &Path) -> Result<()> {
     let toencode = !matches!(get_vendor(filename)?.as_str(), CURRENT_VENDOR);
 
-    let modtime = filename
-        .metadata()?
+    let modtime = fs::metadata(filename)
+        .await?
         .modified()?
         .duration_since(UNIX_EPOCH)?
         .as_secs();
@@ -56,8 +57,8 @@ pub(crate) async fn insert_file<'a>(tx: Transaction<'a>, filename: &Path) -> Res
 }
 
 pub(crate) async fn update_file<'a>(tx: Transaction<'a>, filename: &Path) -> Result<()> {
-    let modtime = filename
-        .metadata()?
+    let modtime = fs::metadata(filename)
+        .await?
         .modified()?
         .duration_since(UNIX_EPOCH)?
         .as_secs();
