@@ -107,13 +107,13 @@ fn main() -> Result<()> {
 
     if args.get_flag("clean") {
         let handler = running.clone();
-        runtime.block_on(async { files::clean_files(&db.connect()?, handler).await })?;
+        runtime.block_on(async { files::clean_files(&db, handler).await })?;
     }
 
     if args.get_flag("doit") {
         let hanlder = running.clone();
         let threads = *args.get_one::<usize>("threads").unwrap();
-        files::reencode_files(&db, hanlder, threads, runtime);
+        files::reencode_files(&db, hanlder, threads, runtime)?;
     }
 
     Ok::<(), anyhow::Error>(())
