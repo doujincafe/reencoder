@@ -89,33 +89,32 @@ fn main() -> Result<()> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     })?;
+    let runtime = tokio::runtime::Builder::new_multi_thread().build()?;
 
-    smol::block_on(async move {
-        let path = args.get_one::<PathBuf>("db");
-        let db = db::init_db(path).await?;
+    let path = args.get_one::<PathBuf>("db");
+    let db = runtime.block_on(async { db::init_db(path).await })?;
 
-        if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
-            let count = db::get_toencode_number(&db.connect()?).await?;
-            println!("Files to reencode:\t{}", style(count).green());
-            return Ok(());
-        }
+    if path.is_none() && !args.get_flag("clean") && !args.get_flag("doit") {
+        let count = runtime.block_on(async { db::get_toencode_number(&db.connect()?).await })?;
+        println!("Files to reencode:\t{}", style(count).green());
+        return Ok(());
+    }
 
-        if let Some(realpath) = path {
-            let hanlder = running.clone();
-            files::index_files_recursively(realpath, &db.connect()?, hanlder).await?;
-        }
+    if let Some(realpath) = path {
+        let hanlder = running.clone();
+        runtime.block_on(async { files::index_files_recursively(realpath, &db, hanlder).await })?;
+    }
 
-        if args.get_flag("clean") {
-            let handler = running.clone();
-            files::clean_files(&db.connect()?, handler).await?;
-        }
+    if args.get_flag("clean") {
+        let handler = running.clone();
+        runtime.block_on(async { files::clean_files(&db.connect()?, handler).await })?;
+    }
 
-        if args.get_flag("doit") {
-            let hanlder = running.clone();
-            let threads = *args.get_one::<usize>("threads").unwrap();
-            files::reencode_files(&db.connect()?, hanlder, threads).await?;
-        }
+    if args.get_flag("doit") {
+        let hanlder = running.clone();
+        let threads = *args.get_one::<usize>("threads").unwrap();
+        files::reencode_files(&db, hanlder, threads, runtime);
+    }
 
-        Ok::<(), anyhow::Error>(())
-    })
+    Ok::<(), anyhow::Error>(())
 }

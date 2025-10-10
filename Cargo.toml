@@ -23,7 +23,5 @@ console = { version = "0.16.0", features = ["windows-console-colors"] }
 ctrlc = "3.4.7"
 flac-codec = { version = "1.2.0" }
 turso = "0.2.2"
-smol = "2.0.2"
-async-trait = "0.1.89"
-smol-macros = "0.1.1"
 macro_rules_attribute = "0.2.2"
+tokio = { version = "1.47.1", features = ["fs", "macros", "rt", "rt-multi-thread"] }

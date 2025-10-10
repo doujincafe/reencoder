@@ -15,7 +15,11 @@ use std::{
     thread::{self, sleep},
     time::{Duration, UNIX_EPOCH},
 };
-use turso::Connection;
+use tokio::fs;
+use turso::{
+    Connection, Database,
+    transaction::{DropBehavior, Transaction, TransactionBehavior},
+};
 use walkdir::WalkDir;
 
 #[cfg(not(test))]
@@ -51,28 +55,27 @@ impl Display for FileError {
 
 impl Error for FileError {}
 
-async fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
-    if db::check_file(conn, file).await? {
-        let modtime = file
-            .metadata()?
+async fn handle_file<'a>(file: &Path, tx: Transaction<'a>) -> Result<()> {
+    if db::check_file(&tx, &file).await? {
+        let modtime = fs::metadata(&file)
+            .await?
             .modified()?
             .duration_since(UNIX_EPOCH)?
             .as_secs();
-        let db_modtime = db::get_modtime(conn, file).await?;
+        let db_modtime = db::get_modtime(&tx, &file).await?;
         if modtime != db_modtime {
-            db::update_file(conn, file).await?;
+            db::update_file(tx, &file).await?;
         }
-        return Ok(());
+    } else {
+        db::insert_file(tx, &file).await?;
     }
-
-    db::insert_file(conn, file).await?;
 
     Ok(())
 }
 
-pub async fn index_files_recursively(
+pub async fn index_files_recursively<'a>(
     path: &Path,
-    conn: &Connection,
+    db: &Database,
     handler: Arc<AtomicBool>,
 ) -> Result<()> {
     if !path.is_dir() {
@@ -84,47 +87,48 @@ pub async fn index_files_recursively(
     let bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::stdout_with_hz(60))
         .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
         .with_message("Indexing");
-    let (filesend, filerecv) = mpsc::channel();
 
-    #[cfg(not(test))]
-    let newbar = bar.clone();
-
-    let newhandler = handler.clone();
+    let mut tasks = tokio::task::JoinSet::new();
 
     #[allow(unused_variables)]
-    thread::spawn(move || {
-        for entry in WalkDir::new(&abspath) {
-            if newhandler.load(Ordering::SeqCst) {
-                if let Err(error) = entry {
-                    #[cfg(not(test))]
-                    newbar.println(format!("{}", error));
-                } else {
-                    let path = entry.unwrap().into_path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    if path.extension().is_some_and(|x| x == "flac") {
-                        let _ = filesend.send(path.to_owned());
+    for entry in WalkDir::new(&abspath) {
+        if let Err(error) = entry {
+            #[cfg(not(test))]
+            bar.println(format!("{}", error));
+        } else {
+            let path = entry.unwrap().into_path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().is_some_and(|x| x == "flac") {
+                let mut conn = db.connect()?;
+
+                #[cfg(not(test))]
+                let newbar = bar.clone();
+                tasks.spawn(async move {
+                    let tx = Transaction::new(&mut conn, TransactionBehavior::Deferred)
+                        .await
+                        .unwrap();
+                    if let Err(error) = handle_file(&path, tx).await {
                         #[cfg(not(test))]
-                        newbar.inc_length(1);
+                        newbar.println(format!("{}", FileError::new(&path, error)));
                     } else {
-                        break;
+                        #[cfg(not(test))]
+                        newbar.inc(1);
                     }
-                }
+                });
+                #[cfg(not(test))]
+                bar.inc_length(1);
+            } else {
+                break;
             }
         }
-    });
+    }
 
-    while let Ok(path) = filerecv.recv()
-        && handler.load(Ordering::SeqCst)
-    {
-        #[allow(unused_variables)]
-        if let Err(error) = smol::block_on(async { handle_file(&path, conn).await }) {
-            #[cfg(not(test))]
-            bar.println(format!("{}", FileError::new(&path, error)));
-        } else {
-            #[cfg(not(test))]
-            bar.inc(1);
+    while let Some(_) = tasks.join_next().await {
+        if !handler.load(Ordering::SeqCst) {
+            tasks.shutdown();
+            break;
         }
     }
 
@@ -139,24 +143,36 @@ pub async fn index_files_recursively(
     Ok(())
 }
 
-pub async fn reencode_files(
+pub fn reencode_files(
     conn: &Connection,
     handler: Arc<AtomicBool>,
     threads: usize,
+    runtime: tokio::runtime::Runtime
 ) -> Result<()> {
+
+    let file_vec = runtime.block_on(async {db::get_toencode_files(conn).await})?;
+
     #[cfg(not(test))]
     let bar = ProgressBar::with_draw_target(
-        Some(db::get_toencode_number(conn).await?),
+        Some(file_vec.len() as u64),
         ProgressDrawTarget::stdout_with_hz(60),
     )
     .with_style(ProgressStyle::with_template(BAR_TEMPLATE)?.progress_chars("#>-"))
     .with_message("Reencoding");
-
-    let mut files = db::get_toencode_files(conn).await?.into_iter();
-
     let thread_counter = Arc::new(AtomicUsize::new(0));
 
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let files = file_vec.iter();
+
     thread::scope(|s| {
+        s.spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            while let Ok(file) = rx.recv() {
+                
+            }
+        });
         while handler.load(Ordering::SeqCst) {
             if thread_counter.load(Ordering::Relaxed) >= threads {
                 sleep(Duration::from_millis(100));
@@ -176,14 +192,14 @@ pub async fn reencode_files(
             #[cfg(not(test))]
             let bar = bar.clone();
             let thread_counter = thread_counter.clone();
-            let conn = conn.clone();
 
             s.spawn(move || {
                 match handle_encode(&file, handler) {
                     Err(error) => eprintln!("{}", FileError::new(&file, error)),
                     Ok(false) => {
+
                         if let Err(error) =
-                            smol::block_on(async { db::update_file(&conn, &file).await })
+                            tokio::(async { db::update_file(&conn, &file).await })
                         {
                             eprintln!("{}", FileError::new(&file, error))
                         }
@@ -209,7 +225,7 @@ pub async fn reencode_files(
 }
 
 pub async fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
-    let files = db::init_clean_files(conn).await?;
+    let files = db::fetch_files(conn).await?;
 
     #[cfg(not(test))]
     let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stdout_with_hz(60))
@@ -259,6 +275,7 @@ mod tests {
         .await
     }
 
+    #[should_panic]
     #[apply(test!)]
     async fn test_clean_files(ex: &Executor<'_>) {
         let dbname = PathBuf::from("temp4.db");
@@ -281,7 +298,7 @@ mod tests {
             std::fs::remove_file("./samples/nonexisting.flac").unwrap();
 
             clean_files(&conn, handler).await.unwrap();
-            let counter = db::init_clean_files(&conn).await.unwrap().len();
+            let counter = db::fetch_files(&conn).await.unwrap().len();
             std::fs::remove_file(dbname).unwrap();
             assert!(counter == 3)
         })

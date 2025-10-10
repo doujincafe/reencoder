@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-use turso::{Connection, params};
+use turso::{Connection, params, transaction::Transaction};
 
 const TABLE_CREATE: &str = "CREATE TABLE IF NOT EXISTS flacs (path TEXT PRIMARY KEY UNIQUE, toencode BOOLEAN NOT NULL, modtime INTEGER)";
 const ADD_FILE: &str = "INSERT INTO flacs (path, toencode, modtime) VALUES (?1, ?2, ?3)";
@@ -15,13 +15,11 @@ const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
 const REMOVE_FILE: &str = "DELETE FROM flacs WHERE path = ?1";
-const DEDUPE_DB: &str =
-    "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
 pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
     let db = if let Some(file) = path {
-        turso::Builder::new_local(file.to_str().unwrap())
+        turso::Builder::new_local(file.canonicalize()?.to_str().unwrap())
             .build()
             .await?
     } else if let Some(base_dir) = BaseDirs::new() {
@@ -37,7 +35,7 @@ pub(crate) async fn init_db(path: Option<&PathBuf>) -> Result<turso::Database> {
     Ok(db)
 }
 
-pub(crate) async fn insert_file(conn: &Connection, filename: &Path) -> Result<()> {
+pub(crate) async fn insert_file<'a>(tx: Transaction<'a>, filename: &Path) -> Result<()> {
     let toencode = !matches!(get_vendor(filename)?.as_str(), CURRENT_VENDOR);
 
     let modtime = filename
@@ -46,33 +44,37 @@ pub(crate) async fn insert_file(conn: &Connection, filename: &Path) -> Result<()
         .duration_since(UNIX_EPOCH)?
         .as_secs();
 
-    conn.execute(
+    tx.execute(
         ADD_FILE,
         params![filename.to_str().unwrap(), toencode, modtime],
     )
     .await?;
 
+    tx.commit().await?;
+
     Ok(())
 }
 
-pub(crate) async fn update_file(conn: &Connection, filename: &Path) -> Result<()> {
+pub(crate) async fn update_file<'a>(tx: Transaction<'a>, filename: &Path) -> Result<()> {
     let modtime = filename
         .metadata()?
         .modified()?
         .duration_since(UNIX_EPOCH)?
         .as_secs();
 
-    conn.execute(
+    tx.execute(
         UPDATE_FILE,
         params![filename.to_str().unwrap(), false, modtime],
     )
     .await?;
 
+    tx.commit().await?;
+
     Ok(())
 }
 
-pub(crate) async fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
-    Ok(conn
+pub(crate) async fn check_file<'a>(tx: &Transaction<'a>, filename: &Path) -> Result<bool> {
+    Ok(tx
         .query(CHECK_FILE, params!(filename.to_str().unwrap()))
         .await?
         .next()
@@ -81,8 +83,7 @@ pub(crate) async fn check_file(conn: &Connection, filename: &Path) -> Result<boo
         .get::<bool>(0)?)
 }
 
-pub(crate) async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
-    conn.execute(DEDUPE_DB, ()).await?;
+pub(crate) async fn fetch_files(conn: &Connection) -> Result<Vec<PathBuf>, turso::Error> {
     let mut rows = conn.query(FETCH_FILES, ()).await?;
     let mut files = Vec::new();
     while let Ok(Some(row)) = rows.next().await {
@@ -93,9 +94,10 @@ pub(crate) async fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, 
     Ok(files)
 }
 
-pub(crate) async fn remove_file(conn: &Connection, filename: &Path) -> Result<()> {
-    conn.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))
+pub(crate) async fn remove_file<'a>(tx: Transaction<'a>, filename: &Path) -> Result<()> {
+    tx.execute(REMOVE_FILE, params!(filename.to_str().unwrap()))
         .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -119,8 +121,8 @@ pub(crate) async fn get_toencode_number(conn: &Connection) -> Result<u64, turso:
         .get::<u64>(0)
 }
 
-pub(crate) async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
-    Ok(conn
+pub(crate) async fn get_modtime<'a>(tx: &Transaction<'a>, file: &Path) -> Result<u64> {
+    Ok(tx
         .query(GET_MODTIME, params![file.to_str().unwrap()])
         .await?
         .next()
@@ -129,8 +131,9 @@ pub(crate) async fn get_modtime(conn: &Connection, file: &Path) -> Result<u64> {
         .get::<u64>(0)?)
 }
 
-pub(crate) async fn vacuum(conn: &Connection) -> Result<()> {
-    conn.execute("VACUUM", ()).await?;
+pub(crate) async fn vacuum<'a>(tx: Transaction<'a>) -> Result<()> {
+    tx.execute("VACUUM", ()).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -138,11 +141,10 @@ pub(crate) async fn vacuum(conn: &Connection) -> Result<()> {
 mod tests {
 
     use super::*;
-    use macro_rules_attribute::apply;
-    use smol_macros::{Executor, test};
+    use turso::transaction::{Transaction, TransactionBehavior::Deferred};
 
-    #[apply(test!)]
-    async fn check_localfiles(ex: &Executor<'_>) {
+    #[tokio::test]
+    async fn check_localfiles() {
         let dbname = PathBuf::from("temp1.db");
         let filenames = [
             "./samples/16bit.flac",
@@ -150,69 +152,67 @@ mod tests {
             "./samples/32bit.flac",
         ];
         let mut counter = 0;
-        ex.spawn(async move {
-            let db = init_db(Some(&dbname)).await.unwrap();
-            let conn = db.connect().unwrap();
-            for file in filenames {
-                let path = PathBuf::from(file);
-                insert_file(&conn, &path).await.unwrap();
-            }
-            let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
-            while let Ok(Some(_)) = returned.next().await {
-                counter += 1
-            }
-            std::fs::remove_file(dbname).unwrap();
-            assert!(counter == 0)
-        })
-        .await;
+        let db = init_db(Some(&dbname)).await.unwrap();
+        let mut conn = db.connect().unwrap();
+        for file in filenames {
+            let path = PathBuf::from(file);
+            let tx = Transaction::new(&mut conn, Deferred).await.unwrap();
+            insert_file(tx, &path).await.unwrap();
+        }
+        let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
+        while let Ok(Some(_)) = returned.next().await {
+            counter += 1
+        }
+        std::fs::remove_file(dbname).unwrap();
+        assert!(counter == 0)
     }
 
-    #[apply(test!)]
-    async fn check_update(ex: &Executor<'_>) {
+    #[tokio::test]
+    async fn check_update() {
         let dbname = PathBuf::from("temp2.db");
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
             "./samples/32bit.flac",
         ];
-        ex.spawn(async move {
-            let db = init_db(Some(&dbname)).await.unwrap();
-            let conn = db.connect().unwrap();
-            for file in filenames {
-                insert_file(&conn, &Path::new(file).canonicalize().unwrap())
-                    .await
-                    .unwrap();
-            }
-            conn.execute(
-                UPDATE_FILE,
-                params![
-                    Path::new("./samples/16bit.flac")
-                        .canonicalize()
-                        .unwrap()
-                        .to_str()
-                        .unwrap(),
-                    true,
-                    ""
-                ],
-            )
-            .await
-            .unwrap();
+        let db = init_db(Some(&dbname)).await.unwrap();
+        let mut conn = db.connect().unwrap();
+        for file in filenames {
+            let tx = Transaction::new(&mut conn, Deferred).await.unwrap();
+            insert_file(tx, &Path::new(file).canonicalize().unwrap())
+                .await
+                .unwrap();
+        }
+        conn.execute(
+            UPDATE_FILE,
+            params![
+                Path::new("./samples/16bit.flac")
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                true,
+                ""
+            ],
+        )
+        .await
+        .unwrap();
 
-            update_file(
-                &conn,
-                &Path::new("./samples/16bit.flac").canonicalize().unwrap(),
-            )
-            .await
-            .unwrap();
+        let tx = Transaction::new(&mut conn, Deferred).await.unwrap();
 
-            let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
-            let mut counter = 0;
-            while let Ok(Some(_)) = returned.next().await {
-                counter += 1
-            }
-            std::fs::remove_file(dbname).unwrap();
-            assert!(counter == 0)
-        })
-        .await;
+        update_file(
+            tx,
+            &Path::new("./samples/16bit.flac").canonicalize().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut returned = conn.query(TOENCODE_PATHS, ()).await.unwrap();
+        let mut counter = 0;
+        while let Ok(Some(_)) = returned.next().await {
+            counter += 1
+        }
+        std::fs::remove_file(dbname).unwrap();
+        assert!(counter == 0)
     }
 }
