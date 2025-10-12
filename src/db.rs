@@ -16,8 +16,6 @@ const TOENCODE_NUMBER: &str = "SELECT COUNT(*) from flacs WHERE toencode";
 const CHECK_FILE: &str = "SELECT exists(SELECT 1 FROM flacs WHERE path = ?1)";
 const FETCH_FILES: &str = "SELECT path FROM flacs";
 const REMOVE_FILE: &str = "DELETE FROM flacs WHERE path = ?1";
-const DEDUPE_DB: &str =
-    "DELETE FROM flacs WHERE rowid NOT IN (SELECT MAX(rowid) FROM flacs GROUP BY path)";
 const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = ?1";
 
 pub(crate) fn init_connection(path: Option<&PathBuf>) -> Result<Connection> {
@@ -77,7 +75,6 @@ pub(crate) fn check_file(conn: &Connection, filename: &Path) -> Result<bool> {
 }
 
 pub(crate) fn init_clean_files(conn: &Connection) -> Result<Vec<PathBuf>, rusqlite::Error> {
-    conn.execute(DEDUPE_DB, ())?;
     let mut stmt = conn.prepare(FETCH_FILES)?;
     let mut rows = stmt.query(())?;
     let mut files = Vec::new();
