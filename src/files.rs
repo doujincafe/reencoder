@@ -23,12 +23,13 @@ const BAR_TEMPLATE: &str = "{msg:<} [{wide_bar:.green/cyan}] Elapsed: {elapsed} 
 #[cfg(not(test))]
 const SPINNER_TEMPLATE: &str = "Removed from db: {pos:.green}";
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct FileError {
     file: PathBuf,
     error: anyhow::Error,
 }
-
+#[allow(dead_code)]
 impl FileError {
     fn new(file: &Path, error: anyhow::Error) -> Self {
         FileError {
@@ -183,11 +184,16 @@ pub(crate) fn reencode_files(
             let thread_counter = thread_counter.clone();
 
             s.spawn(move || {
+                #[allow(unused_variables)]
                 match handle_encode(&file, handler) {
-                    Err(error) => eprintln!("{}", FileError::new(&file, error)),
+                    Err(error) => {
+                        #[cfg(not(test))]
+                        bar.println(format!("{}", FileError::new(&file, error)));
+                    }
                     Ok(false) => {
                         if let Err(error) = db::update_file(&lock.lock().unwrap(), &file) {
-                            eprintln!("{}", FileError::new(&file, error));
+                            #[cfg(not(test))]
+                            bar.println(format!("{}", FileError::new(&file, error)));
                         }
                         #[cfg(not(test))]
                         bar.inc(1)
@@ -220,10 +226,11 @@ pub(crate) fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result
     spinner.tick();
 
     files.iter().for_each(|file| {
-        #[allow(clippy::collapsible_if)]
+        #[allow(clippy::collapsible_if, unused_variables)]
         if handler.load(Ordering::SeqCst) && !file.exists() {
             if let Err(error) = db::remove_file(conn, file) {
-                eprintln!("{}", FileError::new(file, error))
+                #[cfg(not(test))]
+                spinner.println(format!("{}", FileError::new(file, error)));
             };
             #[cfg(not(test))]
             spinner.inc(1);
