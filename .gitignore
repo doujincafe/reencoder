@@ -19,7 +19,9 @@
 
 # env file
 .env
+.direnv
 .vscode/launch.json
+result
 target
 testfiles
 testfiles_orig
