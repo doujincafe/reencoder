@@ -3,7 +3,6 @@ use crate::flac::handle_encode;
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rusqlite::Connection;
 use std::{
     error::Error,
     fmt::Display,
@@ -16,6 +15,7 @@ use std::{
     thread::{self, sleep},
     time::{Duration, UNIX_EPOCH},
 };
+use stoolap::Database;
 use walkdir::WalkDir;
 
 #[cfg(not(test))]
@@ -52,7 +52,7 @@ impl Display for FileError {
 
 impl Error for FileError {}
 
-fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
+fn handle_file(file: &Path, conn: &Database) -> Result<()> {
     if db::check_file(conn, file)? {
         let modtime = file
             .metadata()?
@@ -73,7 +73,7 @@ fn handle_file(file: &Path, conn: &Connection) -> Result<()> {
 
 pub(crate) fn index_files_recursively(
     path: &Path,
-    conn: &Connection,
+    conn: &Database,
     handler: Arc<AtomicBool>,
 ) -> Result<()> {
     if !path.is_dir() {
@@ -143,7 +143,7 @@ pub(crate) fn index_files_recursively(
 }
 
 pub(crate) fn reencode_files(
-    conn: Connection,
+    conn: Database,
     handler: Arc<AtomicBool>,
     threads: usize,
 ) -> Result<()> {
@@ -216,7 +216,7 @@ pub(crate) fn reencode_files(
     Ok(())
 }
 
-pub(crate) fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result<()> {
+pub(crate) fn clean_files(conn: &Database, handler: Arc<AtomicBool>) -> Result<()> {
     let files = db::init_clean_files(conn)?;
 
     #[cfg(not(test))]
@@ -247,19 +247,29 @@ pub(crate) fn clean_files(conn: &Connection, handler: Arc<AtomicBool>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::Builder;
 
     #[test]
     fn test_index_lots_of_files() {
-        let dbname = PathBuf::from("temp3.db");
+        let dbname = Builder::new()
+            .suffix(".db")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+            .to_path_buf();
         let handler = Arc::new(AtomicBool::new(true));
         let conn = db::init_connection(Some(&dbname)).unwrap();
         index_files_recursively(Path::new("./testfiles"), &conn, handler).unwrap();
-        std::fs::remove_file(dbname).unwrap();
     }
 
     #[test]
     fn test_clean_files() {
-        let dbname = PathBuf::from("temp4.db");
+        let dbname = Builder::new()
+            .suffix(".db")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+            .to_path_buf();
         let handler = Arc::new(AtomicBool::new(true));
         let conn = db::init_connection(Some(&dbname)).unwrap();
         let filenames = [
@@ -278,13 +288,17 @@ mod tests {
 
         clean_files(&conn, handler).unwrap();
         let counter = db::init_clean_files(&conn).unwrap().len();
-        std::fs::remove_file(dbname).unwrap();
         assert!(counter == 3)
     }
 
     #[test]
     fn test_reencode_lots_of_files() {
-        let dbname = PathBuf::from("temp5.db");
+        let dbname = Builder::new()
+            .suffix(".db")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+            .to_path_buf();
         let handler = Arc::new(AtomicBool::new(true));
         let conn = db::init_connection(Some(&dbname)).unwrap();
         let temp = handler.clone();
@@ -293,6 +307,5 @@ mod tests {
         reencode_files(conn, handler, 4).unwrap();
         let conn = db::init_connection(Some(&dbname)).unwrap();
         println!("\n{}", db::get_toencode_number(&conn).unwrap());
-        std::fs::remove_file(dbname).unwrap();
     }
 }

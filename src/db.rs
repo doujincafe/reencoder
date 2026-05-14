@@ -22,15 +22,15 @@ const GET_MODTIME: &str = "SELECT modtime FROM flacs WHERE path = :path";
 
 pub(crate) fn init_connection(path: Option<&PathBuf>) -> Result<Database> {
     let db = if let Some(file) = path {
-        Database::open(file.to_str()?)?
+        Database::open(&format!("file://{}", file.to_str().unwrap()))?
     } else if let Some(base_dir) = BaseDirs::new() {
         let file = Path::new(base_dir.data_dir()).join("reencoder.db");
-        Database::open(file.to_str()?)?
+        Database::open(&format!("file://{}", file.to_str().unwrap()))?
     } else {
         return Err(anyhow!("Failed to locate data directory"));
     };
     db.execute(TABLE_CREATE, ())?;
-    Ok(conn)
+    Ok(db)
 }
 
 pub(crate) fn insert_file(conn: &Database, filename: &Path) -> Result<()> {
@@ -44,7 +44,7 @@ pub(crate) fn insert_file(conn: &Database, filename: &Path) -> Result<()> {
 
     conn.execute_named(
         ADD_ITEM,
-        named_params! {filename: filename.to_str().unwrap(), toencode: toencode, modtime: modtime},
+        named_params! {filename: filename.to_str().unwrap(), toencode: toencode, modtime: u32::try_from(modtime)?},
     )?;
 
     Ok(())
@@ -59,21 +59,24 @@ pub(crate) fn update_file(conn: &Database, filename: &Path) -> Result<()> {
 
     conn.execute_named(
         UPDATE_ITEM,
-        named_params! {filename: filename.to_str().unwrap(), toencode: false, modtime: modtime},
+        named_params! {filename: filename.to_str().unwrap(), toencode: false, modtime: u32::try_from(modtime)?},
     )?;
 
     Ok(())
 }
 
 pub(crate) fn check_file(conn: &Database, filename: &Path) -> Result<bool> {
-    let tocheck: bool =
-        conn.query_one_named(CHECK_FILE, named_params! {filename: filename.to_str()?})?;
+    let tocheck: bool = conn.query_one_named(
+        CHECK_FILE,
+        named_params! {filename: filename.to_str().unwrap()},
+    )?;
     Ok(tocheck)
 }
 
-pub(crate) fn init_clean_files(conn: &Database) -> Result<Vec<PathBuf>, rusqlite::Error> {
+pub(crate) fn init_clean_files(conn: &Database) -> Result<Vec<PathBuf>, stoolap::Error> {
     let mut files: Vec<PathBuf> = Vec::new();
     for row in conn.query(FETCH_FILES, ())? {
+        let row = row?;
         let path: String = row.get(0)?;
         files.push(PathBuf::from(path));
     }
@@ -81,13 +84,17 @@ pub(crate) fn init_clean_files(conn: &Database) -> Result<Vec<PathBuf>, rusqlite
 }
 
 pub(crate) fn remove_file(conn: &Database, filename: &Path) -> Result<()> {
-    conn.execute_named(REMOVE_FILE, named_params! {filename: filename.to_str()?})?;
+    conn.execute_named(
+        REMOVE_FILE,
+        named_params! {filename: filename.to_str().unwrap()},
+    )?;
     Ok(())
 }
 
-pub(crate) fn get_toencode_files(conn: &Database) -> Result<Vec<PathBuf>, rusqlite::Error> {
+pub(crate) fn get_toencode_files(conn: &Database) -> Result<Vec<PathBuf>, stoolap::Error> {
     let mut files: Vec<PathBuf> = Vec::new();
     for row in conn.query(TOENCODE_PATHS, ())? {
+        let row = row?;
         let path: String = row.get(0)?;
         files.push(PathBuf::from(path));
     }
@@ -95,13 +102,14 @@ pub(crate) fn get_toencode_files(conn: &Database) -> Result<Vec<PathBuf>, rusqli
 }
 
 pub(crate) fn get_toencode_number(conn: &Database) -> Result<u64, stoolap::Error> {
-    let num: u64 = conn.query_one(TOENCODE_NUMBER, ())?;
-    Ok(num)
+    let num: i64 = conn.query_one(TOENCODE_NUMBER, ())?;
+    Ok(num as u64)
 }
 
 pub(crate) fn get_modtime(conn: &Database, file: &Path) -> Result<u64> {
-    let modtime: u64 = conn.query_one_named(GET_MODTIME, named_params! {path: file.to_str()?})?;
-    Ok(modtime)
+    let modtime: i64 =
+        conn.query_one_named(GET_MODTIME, named_params! {path: file.to_str().unwrap()})?;
+    Ok(modtime as u64)
 }
 
 pub(crate) fn vacuum(conn: &Database) -> Result<()> {
@@ -113,23 +121,16 @@ pub(crate) fn vacuum(conn: &Database) -> Result<()> {
 mod tests {
 
     use super::*;
-    use rand::Rng;
-
-    fn generate_random_string() -> String {
-        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        let mut rng = rand::thread_rng();
-
-        (0..16)
-            .map(|_| {
-                let idx = rng.gen_range(0..CHARSET.len());
-                CHARSET[idx] as char
-            })
-            .collect()
-    }
+    use tempfile::Builder;
 
     #[test]
     fn check_localfiles() {
-        let dbname = PathBuf::from(format!(generate_random_string(), ".db"));
+        let dbname = Builder::new()
+            .suffix(".db")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+            .to_path_buf();
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
@@ -146,13 +147,17 @@ mod tests {
         while let Some(Ok(_)) = returned.next() {
             counter += 1
         }
-        std::fs::remove_file(dbname).unwrap();
         assert!(counter == 0)
     }
 
     #[test]
     fn check_update() {
-        let dbname = PathBuf::from(format!(generate_random_string(), ".db"));
+        let dbname = Builder::new()
+            .suffix(".db")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+            .to_path_buf();
         let filenames = [
             "./samples/16bit.flac",
             "./samples/24bit.flac",
@@ -188,7 +193,6 @@ mod tests {
         while let Some(Ok(_)) = returned.next() {
             counter += 1
         }
-        std::fs::remove_file(dbname).unwrap();
         assert!(counter == 0)
     }
 }

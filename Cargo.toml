@@ -14,14 +14,14 @@ anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["cargo", "help", "std"] }
 clap_complete = "4.5.54"
 directories = "6.0.0"
-flac-bound = { version = "0.5.0", default-features = false }
 indicatif = { version = "0.18.0", features = ["improved_unicode"] }
 walkdir = "2.5.0"
 console = { version = "0.16.0"}
 ctrlc = "3.4.7"
 flac-codec = { version = "1.2.0" }
 stoolap = "0.4.0"
-rng = "0.1.0"
+tempfile = "3.27.0"
+flac-bound = { version = "0.5.0", default-features = false, features = ["libflac-nobuild"] }
 
 [target.'cfg(windows)'.dependencies]
 console = { version = "0.16.0", features = ["windows-console-colors"] }
